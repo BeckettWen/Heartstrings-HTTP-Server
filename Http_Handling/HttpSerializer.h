@@ -4,6 +4,8 @@
 #include <map>
 #include "HttpParser.hpp"
 
+#define universalCode "\r\n"
+
 struct httpresponse{
     uint statusCode;
     std::string statusReason;
@@ -13,6 +15,7 @@ struct httpresponse{
 
 enum HttpStatusCode: uint {};
 
-class HttpSerializer{
+class httpSerializer{
+    public:
     
 };
