@@ -66,9 +66,11 @@ namespace string_utils {
 }
 
 class HTTPParser {
-private:
+protected:
     Data data_;
     std::size_t cursor_ = 0;
+
+    friend class httpSerializer;
 
 public:
     explicit HTTPParser(Data data) : data_(std::move(data)) {}
