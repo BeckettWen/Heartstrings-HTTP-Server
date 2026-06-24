@@ -13,3 +13,5 @@ add_executable(XN-5A_Heartstrings-C
   Http_Handling/HttpParser.hpp
   Http_Handling/HttpSerializer.h
 )
+
+include(GoogleTest)
