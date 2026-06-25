@@ -34,14 +34,14 @@ struct HTTPRequest {
 namespace string_utils {
     constexpr std::string_view whitespace = " \t\r\n";
 
-    std::string trim(std::string_view str) {
+    inline std::string trim(std::string_view str) {
         const auto start = str.find_first_not_of(whitespace);
         if (start == std::string_view::npos) return "";
         const auto end = str.find_last_not_of(whitespace);
         return std::string(str.substr(start, end - start + 1));
     }
 
-    std::string to_lower(std::string_view str) {
+    inline std::string to_lower(std::string_view str) {
         std::string result(str);
         std::ranges::transform(result, result.begin(), [](unsigned char c) {
             return std::tolower(c);
@@ -49,7 +49,7 @@ namespace string_utils {
         return result;
     }
 
-    std::vector<std::string_view> split(std::string_view str, char delim) {
+    inline std::vector<std::string_view> split(std::string_view str, char delim) {
         std::vector<std::string_view> out;
 
         auto begin = str.begin();
@@ -80,7 +80,7 @@ public:
         skip_empty_lines();
         auto start_line_res = read_line();
         if (!start_line_res) return std::unexpected(start_line_res.error());
-        
+
         auto start_line_parts = string_utils::split(*start_line_res, ' ');
         if (start_line_parts.size() != 3) {
             return std::unexpected(HTTPParserError::InvalidStartLine);
@@ -136,7 +136,7 @@ public:
             const auto& content_length_str = request.headers["content-length"];
             std::size_t length = 0;
             auto [ptr, ec] = std::from_chars(content_length_str.data(), content_length_str.data() + content_length_str.size(), length);
-            
+
             if (ec != std::errc{}) {
                 return std::unexpected(HTTPParserError::InvalidContentLength);
             }
@@ -217,9 +217,9 @@ private:
 
             auto bytes_res = read_bytes(chunk_size);
             if (!bytes_res) return std::unexpected(bytes_res.error());
-            
+
             full_body.insert(full_body.end(), bytes_res->begin(), bytes_res->end());
-            
+
             if (auto consume = read_line(); !consume) return std::unexpected(consume.error()); // Consume CRLF after chunk data
         }
         return full_body;
