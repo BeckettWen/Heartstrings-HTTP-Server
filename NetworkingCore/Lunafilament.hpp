@@ -14,4 +14,7 @@ class lunarfilament{
     public:
         lunarfilament(){}
         ~lunarfilament(){}
+
+    protected:
+
 };

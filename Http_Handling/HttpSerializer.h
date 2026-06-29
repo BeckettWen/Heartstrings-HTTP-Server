@@ -1,9 +1,15 @@
 #pragma once
 
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <expected>
 #include <string>
+#include <sys/uio.h>
+#include <unistd.h>
+#include <vector>
+#include <sys/socket.h>
+
 #include "HttpParser.hpp"
 
 #define universalCode "\r\n"
@@ -31,7 +37,9 @@ class httpSerializer{
     HTTPRequest request;
 
     public:
-    httpSerializer(): serializedHTTPRequest({}){}
+    std::vector<std::uint8_t> buffer;
+
+    httpSerializer(): serializedHTTPRequest({}), buffer({}){}
     ~httpSerializer(){}
 
     std::vector<std::uint8_t> ReturnSerializedResult(){ return serializedHTTPRequest; }
@@ -76,6 +84,12 @@ class httpSerializer{
         serializedHTTPRequest.insert(serializedHTTPRequest.end(), request.body.begin(), request.body.end());
 
         return {};
+    }
+
+    std::expected<void, std::string> writeToBuffer(int& systemSocket){
+        int writeStatus = write(systemSocket, serializedHTTPRequest.data(), serializedHTTPRequest.size());
+        if(writeStatus == -1){ return std::unexpected<std::string>("write to the socket failed");}
+        else{ return {}; }
     }
 
     //MARK: Helper Method
