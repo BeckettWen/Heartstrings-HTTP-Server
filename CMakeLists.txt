@@ -17,6 +17,7 @@ add_executable(XN-5A_Heartstrings-C
   Http_Handling/HttpParser.hpp
   Http_Handling/HttpSerializer.h
   NetworkingCore/Lunafilament.hpp
+  Subsystems/Aegis.hpp
 )
 
 add_executable(unit-tests
