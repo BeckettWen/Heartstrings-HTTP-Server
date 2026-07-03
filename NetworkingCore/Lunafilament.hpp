@@ -1,10 +1,15 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
 #include <expected>
 #include <fcntl.h>
+#include <asio.hpp>
+#include <tuple>
+#include <vector>
 
 #include "../Subsystems/Aegis.hpp"
 
@@ -25,6 +30,6 @@ class lunarfilament{
         ~lunarfilament(){}
 
     protected:
-        std::expected<void, std::string> createSocketWithSpecificPort(){}
+        std::expected<void, std::string> initializationWithSpecificPort(int16_t SpecificPort){}
 
 };

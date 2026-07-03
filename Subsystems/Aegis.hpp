@@ -5,9 +5,13 @@
 #include <alloca.h>
 #include <array>
 #include <cstddef>
+#include <expected>
 #include <memory>
+#include <string>
 #include <sys/socket.h>
 #include <array>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 
 using DefaultChunkOfMemory = std::array<std::byte, 1024*1024>;
@@ -24,8 +28,15 @@ namespace Aegis_MemoryManager{
             std::size_t currentUsablePosition = 0;
             std::size_t memoryBlockNumber, idleMemorySize;
 
+            //this is used to store the allocated memory addresses and its size
+            std::vector<std::tuple<std::byte*, std::size_t>> allocatedMemoryAddresses;
+
             std::vector<std::array<int, 2>> allocationRecorder;
             int currentIndex = 0, previousMemoryBlock = 0;
+
+            //i need to setup one vector that holds the end and the start of each chunk, so that i can know if the
+            // memory written process writes to the end of the current memory chunk
+            std::unordered_map<std::weak_ptr<std::byte*>, std::weak_ptr<std::byte*>> beginningOfNextChunk;
 
         public:
             Aegis_allocator(){
@@ -33,7 +44,9 @@ namespace Aegis_MemoryManager{
                 memoryBlockNumber = 0;
                 idleMemorySize = (memoryPool.capacity() - memoryPool.size()) *1024 *1024;
             }
-            ~Aegis_allocator(){}
+            ~Aegis_allocator(){
+                memoryPool.clear();
+            }
 
         protected:
             //notice that while request the memory, you need to request in bytes
@@ -78,6 +91,17 @@ namespace Aegis_MemoryManager{
             }
 
 
+            //use the template function to achieve best flexibility
+            template<typename ParameterType>
+            std::expected<void, std::string> writeDataToAllocatedMemory(std::byte*& memoryAddress, const void * dataToBeWritten, std::size_t dataSize){
+                //this is the example of the iteration that while the input data is the vector form
+                const ParameterType *temporaryDataStorage = static_cast<const ParameterType*>(dataToBeWritten);
+                if(idleMemorySize < dataSize){ return std::unexpected<std::string>("No Enough Memory"); }
+
+                //here is the actual writing process
+
+            }
+
             //helper methods
             std::vector<std::array<int, 2>> requestDeletableMemory(){
                 for (auto item = allocationRecorder.begin(); item != allocationRecorder.end();){
@@ -86,6 +110,9 @@ namespace Aegis_MemoryManager{
 
                     ++item;
                 }
+
+                //shrink the memory pool for the better efficiency of the memory
+                memoryPool.shrink_to_fit();
 
                 return allocationRecorder;
             }
