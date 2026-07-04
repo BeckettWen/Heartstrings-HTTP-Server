@@ -32,13 +32,7 @@ endif()
 find_package(GTest REQUIRED)
 
 # Define your executable name and source files
-add_executable(XN-5A_Heartstrings-C
-  main.cpp
-  Http_Handling/HttpParser.hpp
-  Http_Handling/HttpSerializer.h
-  NetworkingCore/Lunafilament.hpp
-  Subsystems/Aegis.hpp
-)
+
 
 add_executable(unit-tests
     tests/tests.cpp
@@ -50,12 +44,6 @@ target_link_libraries(
     GTest::gtest_main
     GTest::gtest
     asio::asio
-)
-
-target_link_libraries(
-  XN-5A_Heartstrings-C
-  PRIVATE
-  asio::asio
 )
 
 include(GoogleTest)
