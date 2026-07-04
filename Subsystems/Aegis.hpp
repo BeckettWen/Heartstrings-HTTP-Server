@@ -30,11 +30,13 @@ namespace Aegis_MemoryManager{
             //using the 1 megabytes memory as the allocator's step inside the header file
             // these are the core part of the memory allocator
             std::vector<std::unique_ptr<DefaultChunkOfMemory>> memoryPool;
-            std::vector<MemoryAddress> memoryAddresses;
-            std::unordered_map<MemoryAddress, std::size_t> allocatedChunkSize;
+            std::vector<std::tuple<MemoryAddress, std::size_t>> memoryAddresses;
+            std::unordered_map<std::size_t, std::size_t> allocatedChunkSize, allocationRecorder;
 
             std::size_t memoryBlockNumber_InsideChunk, idleMemorySize, currentAvaliableChunkNumber, previousChunkNumber;
             MemoryAddress temporaryAddress;
+
+            std::size_t AllocationIndex = 0;
 
 
         public:
@@ -48,6 +50,7 @@ namespace Aegis_MemoryManager{
             }
 
         protected:
+            //memory allocation, return the index to achieve maximize simplicity
             std::size_t allocateMemory(std::size_t requestedSize){
                 previousChunkNumber = currentAvaliableChunkNumber;
                 currentAvaliableChunkNumber += requestedSize / (1024*1024) + 1;
@@ -57,10 +60,13 @@ namespace Aegis_MemoryManager{
                 });
 
                 // get the memory address, aka the special index
+                AllocationIndex ++;
                 temporaryAddress = std::make_tuple(currentAvaliableChunkNumber, 0);
-                memoryAddresses.emplace_back(temporaryAddress);
+                memoryAddresses.insert(memoryAddresses.end(), std::make_tuple(temporaryAddress, AllocationIndex));
 
-                allocatedChunkSize.insert(allocatedChunkSize.end(), {memoryAddresses.back(), requestedSize / (1024*1024) + 1});
+                allocationRecorder.insert(allocationRecorder.end(), {currentAvaliableChunkNumber, AllocationIndex});
+
+                allocatedChunkSize.insert(allocatedChunkSize.end(), {AllocationIndex, requestedSize / (1024*1024) + 1});
                 return memoryAddresses.size();
             }
 
