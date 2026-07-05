@@ -64,15 +64,36 @@ namespace Aegis_MemoryManager{
                 temporaryAddress = std::make_tuple(currentAvaliableChunkNumber, 0);
                 memoryAddresses.insert(memoryAddresses.end(), std::make_tuple(temporaryAddress, AllocationIndex));
 
-                allocationRecorder.insert(allocationRecorder.end(), {currentAvaliableChunkNumber, AllocationIndex});
+                allocationRecorder.insert(allocationRecorder.end(), {AllocationIndex, currentAvaliableChunkNumber});
 
                 allocatedChunkSize.insert(allocatedChunkSize.end(), {AllocationIndex, requestedSize / (1024*1024) + 1});
                 return memoryAddresses.size();
             }
 
             std::expected<void, std::string> DeleteMemory(std::size_t requestedDeletion){
-
+                //use the passed in request index to find the address and the step
+                std::unordered_map<std::size_t, std::size_t>::iterator findResult = allocationRecorder.find(requestedDeletion);
+                if(findResult != allocationRecorder.end()){
+                    std::unordered_map<std::size_t, std::size_t>::iterator sizeFindResult = allocatedChunkSize.find(findResult->second);
+                    if(sizeFindResult == allocatedChunkSize.end()){ return std::unexpected<std::string>("Chunk Size Unavailable");}
+                    else{
+                        // now is the main process of the deletion process
+                        // btw, it will be so much less fun if i use the auto keyword doesn't it
+                        int loop_DeletionProcess = findResult->first;
+                        while (loop_DeletionProcess < sizeFindResult->second + findResult->first) {
+                            memoryPool[loop_DeletionProcess].reset();
+                            loop_DeletionProcess ++ ;
+                        }
+                        return {};
+                    }
+                }
+                else{ return std::unexpected<std::string>("Requested area doesn't exist"); }
             }
-    };
 
+            std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory){}
+
+
+    //the end bracket of the class
+    };
+//the end bracket of the namespace
 }
