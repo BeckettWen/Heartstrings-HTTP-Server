@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <array>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -90,10 +91,16 @@ namespace Aegis_MemoryManager{
                 else{ return std::unexpected<std::string>("Requested area doesn't exist"); }
             }
 
-            std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory){}
+            template<typename Datatype>
+            std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory, const void* data){
+                // first you need to get the actual address and the avaliable chunks
+                std::unordered_map<std::size_t, std::size_t>::iterator sizeFindResult = allocatedChunkSize.find(requestedMemory);
+            }
 
 
-    //the end bracket of the class
+    //the end bracket of the class Aegis_allocator
     };
+
+    class Aegis_Multithreading{};
 //the end bracket of the namespace
 }
