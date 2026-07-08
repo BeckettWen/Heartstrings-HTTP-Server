@@ -94,7 +94,26 @@ namespace Aegis_MemoryManager{
             template<typename Datatype>
             std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory, const void* data){
                 // first you need to get the actual address and the avaliable chunks
-                std::unordered_map<std::size_t, std::size_t>::iterator sizeFindResult = allocatedChunkSize.find(requestedMemory);
+                std::unordered_map<std::size_t, std::size_t>::iterator recordFindResult = allocationRecorder.find(requestedMemory);
+                if (recordFindResult == allocationRecorder.end()){ return std::unexpected<std::string>("Error: From Memory Record Finding"); }
+                else{
+
+                    std::unordered_map<std::size_t, std::size_t>::iterator sizeFindResult = allocatedChunkSize.find(requestedMemory);
+                    if(sizeFindResult == allocatedChunkSize.end()){ return std::unexpected<std::string>("Error: From Record Finding Process");}
+                    else{
+
+                        const Datatype* dataStorage = static_cast<const Datatype*>(data);
+                        for(auto item: dataStorage){
+                            // here should have the basic process of handling the writting and checking the boundary
+                            
+                        }
+
+
+                        delete dataStorage;
+                    // here is the end of the size find result
+                    }
+                // here is the end of the record find result
+                }
             }
 
 

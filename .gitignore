@@ -15,4 +15,4 @@ CMakeUserPresets.json
 /build
 /.vscode
 /.cache
-
+._*
