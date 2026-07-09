@@ -91,6 +91,10 @@ namespace Aegis_MemoryManager{
                 else{ return std::unexpected<std::string>("Requested area doesn't exist"); }
             }
 
+
+            // i want you to notice something that though the function theoratically accepts the data with every type
+            // but still, if you use the general vector type would be much easier
+            // and that is the official supported data type when writing examples and do some demonstrations
             template<typename Datatype>
             std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory, const void* data){
                 // first you need to get the actual address and the avaliable chunks
@@ -102,19 +106,47 @@ namespace Aegis_MemoryManager{
                     if(sizeFindResult == allocatedChunkSize.end()){ return std::unexpected<std::string>("Error: From Record Finding Process");}
                     else{
 
+                        // here is the temporary variables that would be used to assist the processing of the 
+                        // memory address, so be calm when seeing these variables
+                        auto temporaryMemoryAddress = memoryAddresses[requestedMemory];
+                        std::size_t ChunkNumberIndicator = std::get<0>(std::get<0>(temporaryMemoryAddress));
+                        std::size_t indicatorInsidetheChunk = std::get<1>(std::get<0>(temporaryMemoryAddress));
+                        std::size_t avaliableChunks = (*sizeFindResult).second;
+
                         const Datatype* dataStorage = static_cast<const Datatype*>(data);
                         for(auto item: dataStorage){
                             // here should have the basic process of handling the writting and checking the boundary
+                            idleMemorySize = sizeFindResult->second * 1024 * 1024;
+                            if(std::size(dataStorage) > idleMemorySize){ 
+                                return std::unexpected<std::string>("Error: low memory size");
+                                break;
+                            }
                             
+                            //write the data as the raw bytes
+                            if(indicatorInsidetheChunk == 1024*1024 - 1){
+                                avaliableChunks -= 1;
+                                ChunkNumberIndicator += 1;
+                                indicatorInsidetheChunk = 0;
+                                (*memoryPool[ChunkNumberIndicator])[indicatorInsidetheChunk] = static_cast<std::byte>(item);
+                            }
+                            else{
+                                indicatorInsidetheChunk += 1;
+                                (*memoryPool[ChunkNumberIndicator])[indicatorInsidetheChunk] = static_cast<std::byte>(item);
+                            }
                         }
 
 
                         delete dataStorage;
+                        // this is the end of the writting process
+                        return {};
                     // here is the end of the size find result
                     }
                 // here is the end of the record find result
                 }
+            // here is the end of the whole writting function
             }
+
+
 
 
     //the end bracket of the class Aegis_allocator

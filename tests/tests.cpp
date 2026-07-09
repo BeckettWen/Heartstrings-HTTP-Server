@@ -7,6 +7,7 @@
 #include <vector>
 #include "../Http_Handling/HttpSerializer.h"
 #include "../Http_Handling/HttpParser.hpp"
+#include "../Subsystems/Aegis.hpp"
 
 TEST(unittests, serializertest){
     //preparation for the test
