@@ -23,6 +23,8 @@ class lunarfilament{
         sockaddr_in universalAddress;
         //use the memoryManager to manage the memory, avoid the memory leak and better, easier memory allocation
         Aegis_MemoryManager::Aegis_allocator memoryAllocator;
+        int fileDescriptor;
+        
 
 
     public:
