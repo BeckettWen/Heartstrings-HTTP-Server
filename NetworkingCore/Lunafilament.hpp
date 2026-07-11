@@ -10,8 +10,22 @@
 #include <asio.hpp>
 #include <tuple>
 #include <vector>
+#include <boost/asio.hpp>
 
 #include "../Subsystems/Aegis.hpp"
+
+namespace asio = boost::asio;
+
+struct lunarfilament_connection{
+    int fileDescriptor;
+    enum State { READING_HEADERS, WRITING_RESPONSE, CLOSED } state;
+
+    // here is the custom read and the write buffer of the customized connection machine
+    std::vector<uint8_t> buffer_read;
+    std::vector<uint8_t> buffer_write;
+
+    lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(READING_HEADERS) {}
+};
 
 class lunarfilament{
     // this is the network core of the http server
