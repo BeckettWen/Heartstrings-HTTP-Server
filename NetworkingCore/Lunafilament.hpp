@@ -21,8 +21,9 @@ struct lunarfilament_connection{
     enum State { READING_HEADERS, WRITING_RESPONSE, CLOSED } state;
 
     // here is the custom read and the write buffer of the customized connection machine
-    std::vector<uint8_t> buffer_read;
-    std::vector<uint8_t> buffer_write;
+    // also use the memory allocator to manage the memory efficiently
+    std::size_t buffer_read;
+    std::size_t buffer_write;
 
     lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(READING_HEADERS) {}
 };
@@ -38,11 +39,17 @@ class lunarfilament{
         //use the memoryManager to manage the memory, avoid the memory leak and better, easier memory allocation
         Aegis_MemoryManager::Aegis_allocator memoryAllocator;
         int fileDescriptor;
+
+        asio::io_context lunarfilament_io_context;
+        asio::posix::stream_descriptor listeningDescriptor;
+
+        // this is used to register a list that which connection is which
+        std::unordered_map<int, std::shared_ptr<lunarfilament_connection>> connectionMap;
         
 
 
     public:
-        lunarfilament(){}
+        lunarfilament(int nativeFileDescriptor): listeningDescriptor(lunarfilament_io_context, nativeFileDescriptor){}
         ~lunarfilament(){}
 
     protected:
