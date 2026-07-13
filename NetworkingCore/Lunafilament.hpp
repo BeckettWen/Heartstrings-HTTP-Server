@@ -49,10 +49,49 @@ class lunarfilament{
 
 
     public:
-        lunarfilament(int nativeFileDescriptor): listeningDescriptor(lunarfilament_io_context, nativeFileDescriptor){}
+        lunarfilament(int nativeFileDescriptor): listeningDescriptor(lunarfilament_io_context, nativeFileDescriptor){
+            
+        }
         ~lunarfilament(){}
 
     protected:
         std::expected<void, std::string> initializationWithSpecificPort(int16_t SpecificPort){}
+
+        // this is the running function of the context
+        std::expected<void, std::string> run(){
+            lunarfilament_io_context.run();
+        }
+
+        // here is the function that handles the handshake when there is a connection
+        std::expected<void, std::string> expect_connection(){}
+
+        // here is the helper method that handles the accept of the connection
+        std::expected<void, std::string> connection_acception(){
+            int temporary_clientfileDescriptor = accept(listeningDescriptor.native_handle(), nullptr, nullptr);
+            if(temporary_clientfileDescriptor < 0){ return std::unexpected<std::string>("Error: File Descriptor"); }
+
+            int temporary_flags = fcntl(temporary_clientfileDescriptor, F_GETFL);
+            fcntl(temporary_clientfileDescriptor, F_SETFL, temporary_flags | O_NONBLOCK);
+
+            std::shared_ptr<lunarfilament_connection> temporary_connection = std::make_shared<lunarfilament_connection>();
+            connectionMap.insert(connectionMap.end(), {temporary_clientfileDescriptor, temporary_connection});
+
+            // here is something that i do not quite get into it
+            // it says that this is the brand new connection acceptor that handles the connection
+            std::shared_ptr<asio::posix::stream_descriptor> socket_watcher = 
+                std::make_shared<asio::posix::stream_descriptor>(lunarfilament_io_context, temporary_clientfileDescriptor);
+            
+            // now use the read and the write function to read or write the data into the kernel waitlist
+            clientRead(socket_watcher, temporary_connection);
+        }
+
+        std::expected<void, std::string> clientRead(std::shared_ptr<asio::posix::stream_descriptor> socketWatcher, 
+            std::shared_ptr<lunarfilament_connection> connection){}
+
+        // here is the clean up of the connection to prevent the memory leak
+        void fileDescriptorCleanUp(int& fileDescriptor){
+            close(fileDescriptor);
+            connectionMap.erase(fileDescriptor);
+        }
 
 };
