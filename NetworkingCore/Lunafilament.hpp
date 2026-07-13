@@ -25,6 +25,8 @@ struct lunarfilament_connection{
     std::size_t buffer_read;
     std::size_t buffer_write;
 
+    std::vector<char> temporaryBuffer;
+
     lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(READING_HEADERS) {}
 };
 
@@ -86,7 +88,25 @@ class lunarfilament{
         }
 
         std::expected<void, std::string> clientRead(std::shared_ptr<asio::posix::stream_descriptor> socketWatcher, 
-            std::shared_ptr<lunarfilament_connection> connection){}
+            std::shared_ptr<lunarfilament_connection> connection){
+                // this tells the socket watcher to wake up as the client transfers the data
+                (*socketWatcher).async_wait(asio::posix::stream_descriptor::wait_read, 
+                    [this, socketWatcher, connection](const boost::system::error_code& errorCode){
+                        // here is the error handling of the system error
+                        if(errorCode){ return std::unexpected<std::string>("Error: From Client Read"); }
+
+                        // now use the raw read function to read the data from the socket
+                        std::array<char, 1024> buffer;
+                        ssize_t readResult = read((*connection).fileDescriptor, &buffer, buffer.size());
+
+                        if(readResult > 0){
+                            // insert the data into the buffer inside the custom connection
+                            (*connection).temporaryBuffer.insert((*connection).temporaryBuffer.end(), 
+                                buffer.begin(), buffer.end());
+                        }
+                        else{}
+                    });
+            }
 
         // here is the clean up of the connection to prevent the memory leak
         void fileDescriptorCleanUp(int& fileDescriptor){
