@@ -16,9 +16,13 @@
 
 namespace asio = boost::asio;
 
+enum State { 
+    READING_HEADERS, WRITING_RESPONSE, CLOSED 
+};
+
 struct lunarfilament_connection{
     int fileDescriptor;
-    enum State { READING_HEADERS, WRITING_RESPONSE, CLOSED } state;
+    State state;
 
     // here is the custom read and the write buffer of the customized connection machine
     // also use the memory allocator to manage the memory efficiently
