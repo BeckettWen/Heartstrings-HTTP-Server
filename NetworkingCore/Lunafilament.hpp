@@ -103,8 +103,28 @@ class lunarfilament{
                             // insert the data into the buffer inside the custom connection
                             (*connection).temporaryBuffer.insert((*connection).temporaryBuffer.end(), 
                                 buffer.begin(), buffer.end());
+                            
+                            // this is the phase 4 work that need to handle the data
+
+                            // now you should use the reversal function to continue the process
+                            clientRead(socketWatcher, connection);
                         }
-                        else{}
+                        else if(readResult == 0){
+                            // the client closed the connection, use the pre-built function to close 
+                            // the connection and clean up the file descriptor
+                            fileDescriptorCleanUp((*connection).fileDescriptor);
+                        }
+                        else{
+                            // check if the buffer zone of the system is just temporarily empty
+                            // to achieve this, use the file flag to define the operation status
+                            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                                // the temporary buffer is clear, next step is allowed to be done
+                                clientRead(socketWatcher, connection);
+                            }
+                            else{
+                                fileDescriptorCleanUp((*connection).fileDescriptor);
+                            }
+                        }
                     });
             }
 
