@@ -20,9 +20,18 @@ enum State {
     READING_HEADERS, WRITING_RESPONSE, CLOSED 
 };
 
+enum class ConnState {
+    READING_HEADERS,
+    READING_BODY,
+    PROCESSING,
+    WRITING_RESPONSES,
+    KEEP_ALIVE_IDLE,
+    CLOSING
+};
+
 struct lunarfilament_connection{
     int fileDescriptor;
-    State state;
+    ConnState state;
 
     // here is the custom read and the write buffer of the customized connection machine
     // also use the memory allocator to manage the memory efficiently
@@ -31,7 +40,7 @@ struct lunarfilament_connection{
 
     std::vector<char> temporaryBuffer;
 
-    lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(READING_HEADERS) {}
+    lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(ConnState::READING_HEADERS) {}
 };
 
 class lunarfilament{

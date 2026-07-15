@@ -9,15 +9,6 @@
 
 #include "Lunafilament.hpp"
 
-enum class ConnState {
-    READING_HEADERS,
-    READING_BODY,
-    PROCESSING,
-    WRITING_RESPONSES,
-    KEEP_ALIVE_IDLE,
-    CLOSING
-};
-
 struct ResponseFrame{
     std::string headers; // pre-serialized headers
     std::string body; // target payload data
@@ -42,7 +33,19 @@ struct connection_Response{
         std::array<uint8_t, 1024> temporary_Buffer;
         ssize_t bytes_written = recv(input_connection.fileDescriptor, &temporary_Buffer, temporary_Buffer.size(), 0);
 
-        
+        if(bytes_written < 0){
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            input_connection.state = ConnState::CLOSING;
+            return;
+        }
+        else if(bytes_written == 0){
+            input_connection.state = ConnState::CLOSING;
+            return;
+        }
+
+        temporaryInboundBuffer.insert(temporaryInboundBuffer.end(), temporary_Buffer.begin(), temporary_Buffer.begin() + bytes_written);
+        timeoutCounter = std::time(nullptr);
+
     }
 };
 
