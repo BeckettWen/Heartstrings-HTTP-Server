@@ -14,7 +14,6 @@
 
 #include "../Subsystems/Aegis.hpp"
 
-namespace asio = boost::asio;
 
 enum State { 
     READING_HEADERS, WRITING_RESPONSE, CLOSED 
@@ -55,8 +54,8 @@ class lunarfilament{
         Aegis_MemoryManager::Aegis_allocator memoryAllocator;
         int fileDescriptor;
 
-        asio::io_context lunarfilament_io_context;
-        asio::posix::stream_descriptor listeningDescriptor;
+        boost::asio::io_context lunarfilament_io_context;
+        boost::asio::posix::stream_descriptor listeningDescriptor;
 
         // this is used to register a list that which connection is which
         std::unordered_map<int, std::shared_ptr<lunarfilament_connection>> connectionMap;
@@ -88,22 +87,22 @@ class lunarfilament{
             int temporary_flags = fcntl(temporary_clientfileDescriptor, F_GETFL);
             fcntl(temporary_clientfileDescriptor, F_SETFL, temporary_flags | O_NONBLOCK);
 
-            std::shared_ptr<lunarfilament_connection> temporary_connection = std::make_shared<lunarfilament_connection>();
+            std::shared_ptr<lunarfilament_connection> temporary_connection;
             connectionMap.insert(connectionMap.end(), {temporary_clientfileDescriptor, temporary_connection});
 
             // here is something that i do not quite get into it
             // it says that this is the brand new connection acceptor that handles the connection
-            std::shared_ptr<asio::posix::stream_descriptor> socket_watcher = 
-                std::make_shared<asio::posix::stream_descriptor>(lunarfilament_io_context, temporary_clientfileDescriptor);
+            std::shared_ptr<boost::asio::posix::stream_descriptor> socket_watcher = 
+                std::make_shared<boost::asio::posix::stream_descriptor>(lunarfilament_io_context, temporary_clientfileDescriptor);
             
             // now use the read and the write function to read or write the data into the kernel waitlist
             clientRead(socket_watcher, temporary_connection);
         }
 
-        std::expected<void, std::string> clientRead(std::shared_ptr<asio::posix::stream_descriptor> socketWatcher, 
+        std::expected<void, std::string> clientRead(std::shared_ptr<boost::asio::posix::stream_descriptor> socketWatcher, 
             std::shared_ptr<lunarfilament_connection> connection){
                 // this tells the socket watcher to wake up as the client transfers the data
-                (*socketWatcher).async_wait(asio::posix::stream_descriptor::wait_read, 
+                (*socketWatcher).async_wait(boost::asio::posix::stream_descriptor::wait_read, 
                     [this, socketWatcher, connection](const boost::system::error_code& errorCode){
                         // here is the error handling of the system error
                         if(errorCode){ return std::unexpected<std::string>("Error: From Client Read"); }
