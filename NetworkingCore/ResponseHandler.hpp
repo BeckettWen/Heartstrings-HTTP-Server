@@ -47,5 +47,14 @@ struct connection_Response{
         timeoutCounter = std::time(nullptr);
 
     }
+
+    std::expected<void, std::string> process_pipelinedBuffer(lunarfilament_connection& connection){
+        while (connection.state == ConnState::READING_HEADERS){
+            // as long as the code state is reading headers, we keep processing the buffer
+            std::string buffer_view(connection.temporaryBuffer.begin()+parseBuffer, connection.temporaryBuffer.end());
+            
+        }
+        
+    }
 };
 
