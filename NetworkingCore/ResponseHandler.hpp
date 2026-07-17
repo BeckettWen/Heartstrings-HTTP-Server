@@ -22,7 +22,7 @@ struct connection_Response{
     bool if_keepAlive;
 
     std::vector<uint8_t> temporaryInboundBuffer;
-    std::size_t parseBuffer;
+    std::size_t parseBuffer, parseCursor = 0;
 
     std::queue<ResponseFrame> outboundConnection;
 
@@ -51,10 +51,22 @@ struct connection_Response{
     std::expected<void, std::string> process_pipelinedBuffer(lunarfilament_connection& connection){
         while (connection.state == ConnState::READING_HEADERS){
             // as long as the code state is reading headers, we keep processing the buffer
-            std::string buffer_view(connection.temporaryBuffer.begin()+parseBuffer, connection.temporaryBuffer.end());
-            
+            std::string buffer_view(connection.temporaryBuffer.begin()+parseCursor, connection.temporaryBuffer.end());
+            std::size_t buffer_view_findResult = buffer_view.find("\r\n\r\n");
+
+            if(buffer_view_findResult == std::string::npos){ return std::unexpected<std::string>("Invalid HTTP Request");}
+
+            // now you should continue the parsing process
+            std::size_t totalRequestedBytes = parseCursor + buffer_view_findResult + 4;
+            parseCursor = totalRequestedBytes;
+
+            if(parseCursor >= temporaryInboundBuffer.size()){
+                parseCursor = 0;
+                temporaryInboundBuffer.clear();
+            }
+
         }
-        
+    // the end of this member function    
     }
 };
 

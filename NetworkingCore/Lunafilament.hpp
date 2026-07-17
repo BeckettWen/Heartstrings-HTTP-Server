@@ -59,6 +59,9 @@ class lunarfilament{
 
         // this is used to register a list that which connection is which
         std::unordered_map<int, std::shared_ptr<lunarfilament_connection>> connectionMap;
+
+        // this is the cursor that shows the position of the parsing 
+        std::size_t parseCursor_lunarfilament;
         
 
 
@@ -145,5 +148,7 @@ class lunarfilament{
             close(fileDescriptor);
             connectionMap.erase(fileDescriptor);
         }
+
+        std::expected<std::size_t, std::string> getAllocatorSize(){}
 
 };
