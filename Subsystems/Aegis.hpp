@@ -146,6 +146,7 @@ namespace Aegis_MemoryManager{
             // here is the end of the whole writting function
             }
 
+            public:
             // this is the size retrieve function that retrieve the size of the memory block
             std::expected<std::size_t, std::string> getAllocatedSize(std::size_t& memoryRepresentation){
                 std::unordered_map<std::size_t, std::size_t>::iterator findResult;

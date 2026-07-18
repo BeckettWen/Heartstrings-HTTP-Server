@@ -28,6 +28,10 @@ enum class ConnState {
     CLOSING
 };
 
+enum buffer_type: int{
+    type_read, type_write
+};
+
 struct lunarfilament_connection{
     int fileDescriptor;
     ConnState state;
@@ -149,6 +153,24 @@ class lunarfilament{
             connectionMap.erase(fileDescriptor);
         }
 
-        std::expected<std::size_t, std::string> getAllocatorSize(){}
+        std::expected<std::size_t, std::string> getAllocatorSize(lunarfilament_connection& conn ,buffer_type typeOfBuffer){
+            std::expected<std::size_t, std::string> result;
+            switch (typeOfBuffer)
+            {
+            case buffer_type::type_read:
+                result = memoryAllocator.getAllocatedSize(conn.buffer_read);
+                if(result){ return result.value(); }
+                else{ return std::unexpected<std::string>(result.error());  }
+                break;
+            case buffer_type::type_write:
+                result = memoryAllocator.getAllocatedSize(conn.buffer_write);
+                if(result){ return result.value(); }
+                else{ return std::unexpected<std::string>(result.error());  }
+                break;
+            default:
+                return std::unexpected<std::string>("Error: buffer Not Found");
+                break;
+            }
+        }
 
 };
