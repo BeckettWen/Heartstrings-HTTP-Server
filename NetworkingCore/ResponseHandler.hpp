@@ -8,6 +8,8 @@
 #include <array>
 
 #include "Lunafilament.hpp"
+#include "../Http_Handling/HttpParser.hpp"
+#include "../Http_Handling/HttpSerializer.h"
 
 struct ResponseFrame{
     std::string headers; // pre-serialized headers
@@ -25,6 +27,8 @@ struct connection_Response{
     std::size_t parseBuffer, parseCursor = 0;
 
     std::queue<ResponseFrame> outboundConnection;
+
+    HTTPParser& parser_reference;
 
     // from here, the functions are the member functions
     void prepareForNextConnection(){ connection_State = ConnState::READING_HEADERS; }
