@@ -28,6 +28,7 @@ struct connection_Response{
 
     std::queue<ResponseFrame> outboundConnection;
 
+    // here is the reference that points to the universal http parser
     HTTPParser& parser_reference;
 
     // from here, the functions are the member functions

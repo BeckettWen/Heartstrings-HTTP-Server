@@ -13,6 +13,7 @@
 #include <boost/asio.hpp>
 
 #include "../Subsystems/Aegis.hpp"
+#include "../Http_Handling/HttpParser.hpp"
 
 
 enum State { 
@@ -67,12 +68,14 @@ class lunarfilament{
         // this is the cursor that shows the position of the parsing 
         std::size_t parseCursor_lunarfilament;
         
+        // this is the parser reference that holds the universal parser
+        // while this universal parser should be held and managed by the user
+        HTTPParser& universalParser;
 
 
     public:
-        lunarfilament(int nativeFileDescriptor): listeningDescriptor(lunarfilament_io_context, nativeFileDescriptor){
-            
-        }
+        lunarfilament(int nativeFileDescriptor, HTTPParser& userParser)
+            : listeningDescriptor(lunarfilament_io_context, nativeFileDescriptor), universalParser(userParser){}
         ~lunarfilament(){}
 
     protected:
@@ -173,4 +176,12 @@ class lunarfilament{
             }
         }
 
+        // from the following is the merge of the response handler
+        // to integrate the response handler into one single united class
+
+        // MARK: Merged Functions
+
+        std::expected<void, std::string> process_pipelineHandler(lunarfilament_connection& connection){
+            
+        }
 };
