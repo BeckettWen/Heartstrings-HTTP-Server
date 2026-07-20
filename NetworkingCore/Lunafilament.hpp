@@ -11,16 +11,12 @@
 #include <tuple>
 #include <vector>
 #include <boost/asio.hpp>
+#include <queue>
 
 #include "../Subsystems/Aegis.hpp"
 #include "../Http_Handling/HttpParser.hpp"
 
-
-enum State { 
-    READING_HEADERS, WRITING_RESPONSE, CLOSED 
-};
-
-enum class ConnState {
+enum ConnState {
     READING_HEADERS,
     READING_BODY,
     PROCESSING,
@@ -33,9 +29,19 @@ enum buffer_type: int{
     type_read, type_write
 };
 
+struct ResponseFrame{
+    std::string headers; // pre-serialized headers
+    std::string body; // target payload data
+    std::size_t bytesWritten = 0;
+};
+
 struct lunarfilament_connection{
     int fileDescriptor;
     ConnState state;
+    time_t timeoutIndicator;
+    bool if_keepalive;
+
+    std::size_t parseBuffer, parseCursor = 0;
 
     // here is the custom read and the write buffer of the customized connection machine
     // also use the memory allocator to manage the memory efficiently
@@ -71,6 +77,12 @@ class lunarfilament{
         // this is the parser reference that holds the universal parser
         // while this universal parser should be held and managed by the user
         HTTPParser& universalParser;
+
+        // this holds the outbound connection
+        std::queue<ResponseFrame> outboundConnection;
+
+        // this holds the temporary inbound data
+        std::vector<uint8_t> temporaryInboundBuffer;
 
 
     public:
@@ -181,7 +193,41 @@ class lunarfilament{
 
         // MARK: Merged Functions
 
-        std::expected<void, std::string> process_pipelineHandler(lunarfilament_connection& connection){
-            
+        void read_client_socket(lunarfilament_connection& input_connection){
+            std::array<uint8_t, 1024> temporary_Buffer;
+            ssize_t bytes_written = recv(input_connection.fileDescriptor, &temporary_Buffer, temporary_Buffer.size(), 0);
+
+            if(bytes_written < 0){
+                if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+                input_connection.state = ConnState::CLOSING;
+                return;
+            }
+            else if(bytes_written == 0){
+                input_connection.state = ConnState::CLOSING;
+                return;
+            }
+
+            temporaryInboundBuffer.insert(temporaryInboundBuffer.end(), temporary_Buffer.begin(), temporary_Buffer.begin() + bytes_written);
+            input_connection.timeoutIndicator = std::time(nullptr);
+
         }
+
+        std::expected<void, std::string> process_pipelineHandler(lunarfilament_connection& connection){
+            while(connection.state == ConnState::READING_HEADERS){
+                // as long as the code state is reading headers, we keep processing the buffer
+                std::string buffer_view(connection.temporaryBuffer.begin()+ connection.parseCursor, connection.temporaryBuffer.end());
+                std::size_t buffer_view_findResult = buffer_view.find("\r\n\r\n");
+
+                if(buffer_view_findResult == std::string::npos){ return std::unexpected<std::string>("Invalid HTTP Request");}
+
+                // now you should continue the parsing process
+                std::size_t totalRequestedBytes = connection.parseCursor + buffer_view_findResult + 4;
+                connection.parseCursor = totalRequestedBytes;
+
+                if(connection.parseCursor >= temporaryInboundBuffer.size()){
+                    connection.parseCursor = 0;
+                    temporaryInboundBuffer.clear();
+                }
+            }
+        } // this bracket is the end of the 
 };
