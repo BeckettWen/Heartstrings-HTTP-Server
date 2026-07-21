@@ -48,6 +48,9 @@ struct lunarfilament_connection{
     std::size_t buffer_read;
     std::size_t buffer_write;
 
+    // this holds the outbound connection
+    std::queue<ResponseFrame> outboundConnection;
+
     std::vector<char> temporaryBuffer;
 
     lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(ConnState::READING_HEADERS) {}
@@ -78,11 +81,6 @@ class lunarfilament{
         // while this universal parser should be held and managed by the user
         HTTPParser& universalParser;
 
-        // this holds the outbound connection
-        std::queue<ResponseFrame> outboundConnection;
-
-        // this holds the temporary inbound data
-        std::vector<uint8_t> temporaryInboundBuffer;
 
 
     public:
@@ -136,7 +134,7 @@ class lunarfilament{
                         if(readResult > 0){
                             // insert the data into the buffer inside the custom connection
                             (*connection).temporaryBuffer.insert((*connection).temporaryBuffer.end(), 
-                                buffer.begin(), buffer.end());
+                                buffer.begin(), buffer.end() + readResult);
                             
                             // this is the phase 4 work that need to handle the data
 
@@ -193,25 +191,6 @@ class lunarfilament{
 
         // MARK: Merged Functions
 
-        void read_client_socket(lunarfilament_connection& input_connection){
-            std::array<uint8_t, 1024> temporary_Buffer;
-            ssize_t bytes_written = recv(input_connection.fileDescriptor, &temporary_Buffer, temporary_Buffer.size(), 0);
-
-            if(bytes_written < 0){
-                if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-                input_connection.state = ConnState::CLOSING;
-                return;
-            }
-            else if(bytes_written == 0){
-                input_connection.state = ConnState::CLOSING;
-                return;
-            }
-
-            temporaryInboundBuffer.insert(temporaryInboundBuffer.end(), temporary_Buffer.begin(), temporary_Buffer.begin() + bytes_written);
-            input_connection.timeoutIndicator = std::time(nullptr);
-
-        }
-
         std::expected<void, std::string> process_pipelineHandler(lunarfilament_connection& connection){
             while(connection.state == ConnState::READING_HEADERS){
                 // as long as the code state is reading headers, we keep processing the buffer
@@ -224,10 +203,23 @@ class lunarfilament{
                 std::size_t totalRequestedBytes = connection.parseCursor + buffer_view_findResult + 4;
                 connection.parseCursor = totalRequestedBytes;
 
-                if(connection.parseCursor >= temporaryInboundBuffer.size()){
+                if(connection.parseCursor >= connection.temporaryBuffer.size()){
                     connection.parseCursor = 0;
-                    temporaryInboundBuffer.clear();
+                    connection.temporaryBuffer.clear();
                 }
             }
-        } // this bracket is the end of the 
+        } // this bracket is the end of this member function
+
+        // MARK: Member Functions
+        std::expected<void, std::string> clientWrite(lunarfilament_connection& connection){
+            while(connection.state == ConnState::WRITING_RESPONSES){
+                // check if the outbound connection is empty, if empty, set the 
+                // state to the keep alive idle to wait for the incoming connections
+                if(connection.outboundConnection.empty()){
+                    connection.state = ConnState::KEEP_ALIVE_IDLE;
+                }
+
+                
+            }
+        }
 };
