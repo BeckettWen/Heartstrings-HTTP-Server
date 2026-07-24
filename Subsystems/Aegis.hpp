@@ -1,4 +1,6 @@
 //welcome to the Aegis memory manager
+
+// ready to be deprecated and become a single module
 #pragma once
 
 #include <algorithm>
