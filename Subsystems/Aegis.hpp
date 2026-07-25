@@ -97,6 +97,7 @@ namespace Aegis_MemoryManager{
             // i want you to notice something that though the function theoratically accepts the data with every type
             // but still, if you use the general vector type would be much easier
             // and that is the official supported data type when writing examples and do some demonstrations
+        public:
             template<typename Datatype>
             std::expected<void, std::string> wirteDataToMemory(std::size_t requestedMemory, const void* data){
                 // first you need to get the actual address and the avaliable chunks
