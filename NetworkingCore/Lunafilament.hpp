@@ -219,7 +219,37 @@ class lunarfilament{
                     connection.state = ConnState::KEEP_ALIVE_IDLE;
                 }
 
-                
+                // use the temporary buffer to store the data, then write the data using the member function
+                // inside the memory allocator
+                connection.temporaryBuffer.resize(1024);
+                ssize_t writeResult = write(connection.fileDescriptor, &connection.temporaryBuffer, 1024);
+                memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
+
+                // here is the loop that continuously write the bytes left
+                // and handles the data storage and processing
+                while(writeResult != 0){
+                    if(writeResult == -1){ break; }
+                    else{
+                        // use the vector as a fixed size buffer to better control the memory
+                        // and no need to clear the vector cause everytime the array is, and always needed to be 
+                        // fully overwritten
+                        write(connection.fileDescriptor, &connection.temporaryBuffer, 1024);
+                        memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
+
+                        // move the written bytes cursor forward
+                        connection.outboundConnection.front().bytesWritten += writeResult;
+                    }
+                }
+
+                // now you should do the evaluation of the frame completion
+                if(connection.outboundConnection.front().bytesWritten == 
+                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
+                    // pop out the pending, already flushed frame
+                }
+                // in this condition, the indicator must be strictly smaller than the summarized size
+                else if (connection.outboundConnection.front().bytesWritten < 
+                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){}
+                else{}
             }
         }
 };
