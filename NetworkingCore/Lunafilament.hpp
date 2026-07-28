@@ -16,6 +16,11 @@
 #include "../Subsystems/Aegis.hpp"
 #include "../Http_Handling/HttpParser.hpp"
 
+template <typename T>
+constexpr T& as_lvalue(T&& val) noexcept {
+    return val; // 'val' has a name, so inside this function it is an lvalue
+}
+
 enum ConnState {
     READING_HEADERS,
     READING_BODY,
@@ -36,7 +41,7 @@ struct ResponseFrame{
 };
 
 struct lunarfilament_connection{
-    int fileDescriptor;
+    boost::asio::posix::stream_descriptor fileDescriptor;
     ConnState state;
     time_t timeoutIndicator;
     bool if_keepalive;
@@ -53,7 +58,11 @@ struct lunarfilament_connection{
 
     std::vector<char> temporaryBuffer;
 
-    lunarfilament_connection(int socket_fd) : fileDescriptor(socket_fd), state(ConnState::READING_HEADERS) {}
+    boost::system::error_code errorCode;
+
+    lunarfilament_connection(boost::asio::io_context& context ,int socket_fd) :fileDescriptor(context), state(ConnState::READING_HEADERS) {
+        fileDescriptor.assign(socket_fd, errorCode);
+    }
 };
 
 class lunarfilament{
@@ -129,7 +138,7 @@ class lunarfilament{
 
                         // now use the raw read function to read the data from the socket
                         std::array<char, 1024> buffer;
-                        ssize_t readResult = read((*connection).fileDescriptor, &buffer, buffer.size());
+                        ssize_t readResult = read((*connection).fileDescriptor.native_handle(), &buffer, buffer.size());
 
                         if(readResult > 0){
                             // insert the data into the buffer inside the custom connection
@@ -144,7 +153,8 @@ class lunarfilament{
                         else if(readResult == 0){
                             // the client closed the connection, use the pre-built function to close 
                             // the connection and clean up the file descriptor
-                            fileDescriptorCleanUp((*connection).fileDescriptor);
+                            int temp = (*connection).fileDescriptor.native_handle();
+                            fileDescriptorCleanUp(temp);
                         }
                         else{
                             // check if the buffer zone of the system is just temporarily empty
@@ -154,7 +164,8 @@ class lunarfilament{
                                 clientRead(socketWatcher, connection);
                             }
                             else{
-                                fileDescriptorCleanUp((*connection).fileDescriptor);
+                                int temp = (*connection).fileDescriptor.native_handle();
+                                fileDescriptorCleanUp(temp);
                             }
                         }
                     });
@@ -212,44 +223,56 @@ class lunarfilament{
 
         // MARK: Member Functions
         std::expected<void, std::string> clientWrite(lunarfilament_connection& connection){
-            while(connection.state == ConnState::WRITING_RESPONSES){
-                // check if the outbound connection is empty, if empty, set the 
-                // state to the keep alive idle to wait for the incoming connections
-                if(connection.outboundConnection.empty()){
-                    connection.state = ConnState::KEEP_ALIVE_IDLE;
-                }
-
-                // use the temporary buffer to store the data, then write the data using the member function
-                // inside the memory allocator
-                connection.temporaryBuffer.resize(1024);
-                ssize_t writeResult = write(connection.fileDescriptor, &connection.temporaryBuffer, 1024);
-                memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
-
-                // here is the loop that continuously write the bytes left
-                // and handles the data storage and processing
-                while(writeResult != 0){
-                    if(writeResult == -1){ break; }
-                    else{
-                        // use the vector as a fixed size buffer to better control the memory
-                        // and no need to clear the vector cause everytime the array is, and always needed to be 
-                        // fully overwritten
-                        write(connection.fileDescriptor, &connection.temporaryBuffer, 1024);
-                        memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
-
-                        // move the written bytes cursor forward
-                        connection.outboundConnection.front().bytesWritten += writeResult;
-                    }
-                }
-
-                // now you should do the evaluation of the frame completion
-                if(connection.outboundConnection.front().bytesWritten == 
-                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
-                    // pop out the pending, already flushed frame
-                }
-                // in this condition, the indicator must be strictly smaller than the summarized size
-                else if (connection.outboundConnection.front().bytesWritten < 
-                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){}
-                else{}
+            
+            // check if the outbound connection is empty, if empty, set the 
+            // state to the keep alive idle to wait for the incoming connections
+            if(connection.outboundConnection.empty()){
+                connection.state = ConnState::KEEP_ALIVE_IDLE;
+                connection.fileDescriptor.async_wait(boost::asio::posix::stream_descriptor::wait_read);
+                return;
             }
+
+            // calculate the indicator before the write of the data
+            if(connection.outboundConnection.front().bytesWritten > connection.outboundConnection.front().headers.size()){}
+            else{}
+
+            // use the temporary buffer to store the data, then write the data using the member function
+            // inside the memory allocator
+            connection.temporaryBuffer.resize(1024);
+            ssize_t writeResult = write(connection.fileDescriptor.native_handle(), &connection.temporaryBuffer, 1024);
+            memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
+
+            // here is the loop that continuously write the bytes left
+            // and handles the data storage and processing
+            while(writeResult != 0){
+                if(writeResult == -1){ 
+                    // inspect the error code
+                    if(errno == EAGAIN || errno == EWOULDBLOCK){}
+                    else{ fileDescriptorCleanUp(as_lvalue(connection.fileDescriptor.native_handle()));}
+                    break; 
+                }
+                else{
+                    // use the vector as a fixed size buffer to better control the memory
+                    // and no need to clear the vector cause everytime the array is, and always needed to be 
+                    // fully overwritten
+                    write(connection.fileDescriptor.native_handle(), &connection.temporaryBuffer, 1024);
+                    memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
+
+                    // move the written bytes cursor forward
+                    connection.outboundConnection.front().bytesWritten += writeResult;
+                }
+            }
+
+            // now you should do the evaluation of the frame completion
+            if(connection.outboundConnection.front().bytesWritten == 
+            connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
+                // pop out the pending, already flushed frame
+                connection.outboundConnection.pop();
+            }
+            // in this condition, the indicator must be strictly smaller than the summarized size
+            else if (connection.outboundConnection.front().bytesWritten < 
+            connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){}
+            else{}
+            
         }
 };
