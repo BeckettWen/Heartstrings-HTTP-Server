@@ -40,7 +40,7 @@ struct ResponseFrame{
     std::size_t bytesWritten = 0;
 };
 
-struct lunarfilament_connection{
+struct lunarfilament_connection: public std::enable_shared_from_this<lunarfilament_connection> {
     boost::asio::posix::stream_descriptor fileDescriptor;
     ConnState state;
     time_t timeoutIndicator;
@@ -223,13 +223,21 @@ class lunarfilament{
 
         // MARK: Member Functions
         std::expected<void, std::string> clientWrite(lunarfilament_connection& connection){
+
+            auto self = connection.shared_from_this();
             
             // check if the outbound connection is empty, if empty, set the 
             // state to the keep alive idle to wait for the incoming connections
             if(connection.outboundConnection.empty()){
                 connection.state = ConnState::KEEP_ALIVE_IDLE;
-                connection.fileDescriptor.async_wait(boost::asio::posix::stream_descriptor::wait_read);
-                return;
+                connection.fileDescriptor.async_wait(boost::asio::posix::stream_descriptor::wait_read,
+                [this, self](const boost::system::error_code& error){
+                    std::shared_ptr<boost::asio::posix::stream_descriptor> filedescriptor = 
+                        std::make_shared<boost::asio::posix::stream_descriptor>(lunarfilament_io_context ,(*self).fileDescriptor.native_handle()); 
+                    ;
+                    if(!error){ clientRead(std::move(filedescriptor), self); }
+                });
+                return {};
             }
 
             // calculate the indicator before the write of the data
@@ -239,40 +247,108 @@ class lunarfilament{
             // use the temporary buffer to store the data, then write the data using the member function
             // inside the memory allocator
             connection.temporaryBuffer.resize(1024);
-            ssize_t writeResult = write(connection.fileDescriptor.native_handle(), &connection.temporaryBuffer, 1024);
-            memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
+            int temp_bytesIndicator = connection.outboundConnection.front().bytesWritten;
+            std::string::iterator pointer;
+            std::string extractedString;
 
+            // calculate the bytes to be written into the socket
+            std::size_t bytes_offset;
+            std::size_t remainingBytes;
+
+            // add the control flow to calculate the bytes_offset indicator
+            if(connection.outboundConnection.front().bytesWritten < connection.outboundConnection.front().headers.size()){
+                bytes_offset = temp_bytesIndicator;
+                remainingBytes = connection.outboundConnection.front().headers.size() - bytes_offset;
+            }
+            else{
+                bytes_offset = temp_bytesIndicator - connection.outboundConnection.front().headers.size();
+                remainingBytes = connection.outboundConnection.front().body.size() - bytes_offset;
+            }
+
+            std::size_t bytes_to_write = std::min(static_cast<int>(remainingBytes), 1024);
+
+            if(temp_bytesIndicator < connection.outboundConnection.front().headers.size()){
+                pointer = connection.outboundConnection.front().headers.begin() + temp_bytesIndicator;
+                extractedString = std::string(pointer, connection.outboundConnection.front().headers.end());
+            }
+            else{
+                pointer = connection.outboundConnection.front().body.begin() +
+                    connection.outboundConnection.front().bytesWritten - connection.outboundConnection.front().headers.size();
+                extractedString = std::string(pointer, connection.outboundConnection.front().body.end());
+            }
+
+            
+            ssize_t writeResult = write(connection.fileDescriptor.native_handle(), extractedString.data(), bytes_to_write);
+            
             // here is the loop that continuously write the bytes left
             // and handles the data storage and processing
-            while(writeResult != 0){
-                if(writeResult == -1){ 
-                    // inspect the error code
-                    if(errno == EAGAIN || errno == EWOULDBLOCK){}
-                    else{ fileDescriptorCleanUp(as_lvalue(connection.fileDescriptor.native_handle()));}
-                    break; 
-                }
-                else{
-                    // use the vector as a fixed size buffer to better control the memory
-                    // and no need to clear the vector cause everytime the array is, and always needed to be 
-                    // fully overwritten
-                    write(connection.fileDescriptor.native_handle(), &connection.temporaryBuffer, 1024);
-                    memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, connection.temporaryBuffer.data());
-
-                    // move the written bytes cursor forward
-                    connection.outboundConnection.front().bytesWritten += writeResult;
-                }
-            }
-
-            // now you should do the evaluation of the frame completion
-            if(connection.outboundConnection.front().bytesWritten == 
-            connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
-                // pop out the pending, already flushed frame
-                connection.outboundConnection.pop();
-            }
-            // in this condition, the indicator must be strictly smaller than the summarized size
-            else if (connection.outboundConnection.front().bytesWritten < 
-            connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){}
-            else{}
             
+            if(writeResult == -1){ 
+                // inspect the error code
+                if(errno == EAGAIN || errno == EWOULDBLOCK){
+                    connection.fileDescriptor.async_wait(boost::asio::posix::stream_descriptor::wait_write,
+                    [this, self](const boost::system::error_code& errorCode){
+                        if(!errorCode){ clientWrite((*self)); }
+                    });
+                }
+                else{ fileDescriptorCleanUp(as_lvalue(connection.fileDescriptor.native_handle()));}
+            }
+            else{
+
+                // fix : only write to the memory after confirm the write process is successful
+                memoryAllocator.wirteDataToMemory<std::vector<char>>(connection.buffer_write, extractedString.data());
+
+                
+                // move the written bytes cursor forward
+                connection.outboundConnection.front().bytesWritten += writeResult;
+
+                // check if the queue is empty
+                // if(connection.outboundConnection.empty()){ return {}; }
+
+                // now you should do the evaluation of the frame completion
+                if(connection.outboundConnection.front().bytesWritten == 
+                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
+                    // pop out the pending, already flushed frame
+                    connection.outboundConnection.pop();
+
+                    // empty check 
+                    if(connection.outboundConnection.empty()){ 
+                        connection.state = ConnState::KEEP_ALIVE_IDLE;
+                        connection.fileDescriptor.async_wait(
+                            boost::asio::posix::stream_descriptor::wait_read,
+                            [this, self](const boost::system::error_code& error) {
+                                if (!error) { 
+                                    std::shared_ptr<boost::asio::posix::stream_descriptor> socket_watcher = 
+                                        std::make_shared<boost::asio::posix::stream_descriptor>(
+                                            lunarfilament_io_context, 
+                                            self->fileDescriptor.native_handle());
+                                    clientRead(socket_watcher, self); 
+                                }
+                            }
+                        );
+                        return {}; 
+                    }else {
+                        connection.fileDescriptor.async_wait(
+                        boost::asio::posix::stream_descriptor::wait_write,
+                        [this, self](const boost::system::error_code& errorCode) {
+                                if (!errorCode) { clientWrite(*self); }
+                            }
+                        );
+                    }
+                }
+                // in this condition, the indicator must be strictly smaller than the summarized size
+                else if (connection.outboundConnection.front().bytesWritten < 
+                connection.outboundConnection.front().headers.size() + connection.outboundConnection.front().body.size()){
+                    connection.fileDescriptor.async_wait(
+                        boost::asio::posix::stream_descriptor::wait_write,
+                        [this, self](const boost::system::error_code& errorCode) {
+                            if (!errorCode) { clientWrite(*self); }
+                        }
+                    );
+                }
+                else{}
+            }
+            
+            return {};
         }
 };
