@@ -30,10 +30,14 @@ namespace Aegis_MemoryManager{
             std::string version = "Version 1 Update 1";
 
         private:
-            //using the 1 megabytes memory as the allocator's step inside the header file
+            // using the 1 megabytes memory as the allocator's step inside the header file
             // these are the core part of the memory allocator
             std::vector<std::unique_ptr<DefaultChunkOfMemory>> memoryPool;
             std::vector<std::tuple<MemoryAddress, std::size_t>> memoryAddresses;
+
+            // use the allocation recorder to find the record that holds the chunk number
+            // use the allocated chunk size to find the record that holds the chunks allocated
+            // then get to the memory address to get the detailed memory address and the indicator
             std::unordered_map<std::size_t, std::size_t> allocatedChunkSize, allocationRecorder;
 
             std::size_t memoryBlockNumber_InsideChunk, idleMemorySize, currentAvaliableChunkNumber, previousChunkNumber;
@@ -159,6 +163,25 @@ namespace Aegis_MemoryManager{
                     return std::unexpected<std::string>("Error: No record Available");
                 }
                 else{ return (*findResult).second;}
+            }
+
+            std::expected<std::vector<std::byte>, std::string> readData(std::size_t& memoryRepresentation){
+                // construct a temporary byte vector
+                std::vector<std::byte> temporary_finalResult;
+                std::unordered_map<std::size_t, std::size_t>::iterator temp_findResult;
+                std::size_t memoryChunkIndicator, howmanychunks;
+
+                // assign the memory chunk indicator with the find result of the memory find process
+                temp_findResult = allocationRecorder.find(memoryRepresentation);
+                if(temp_findResult == allocationRecorder.end()){ return std::unexpected<std::string>("Error: Memory not found");}
+                memoryChunkIndicator = std::get<1>(*temp_findResult);
+
+                // find the allocated chunk size according to the index
+                temp_findResult = allocatedChunkSize.find(memoryRepresentation);
+                if(temp_findResult == allocatedChunkSize.end()){ return std::unexpected<std::string>("Error: No Eligible Memory");}
+                howmanychunks = std::get<1>(*temp_findResult);
+
+                
             }
 
 

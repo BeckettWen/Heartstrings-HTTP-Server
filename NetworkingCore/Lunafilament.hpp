@@ -350,5 +350,45 @@ class lunarfilament{
             }
             
             return {};
-        }
+        }// the closure of the bracket
+
+
+        // MARK: drive State Machine
+        std::expected<void, std::string> driveStateMachine(lunarfilament_connection& connection){
+            // use a temp vector to store the memory content
+            std::expected<std::vector<std::byte>, std::string> temporary_memoryContent = 
+                memoryAllocator.readData(connection.buffer_read);
+            
+            // if the error occurs, finish the function immediately
+            if(temporary_memoryContent){ return std::unexpected<std::string>(temporary_memoryContent.error()); }
+
+            // cast the raw bytes into standard string
+            std::string temporary_string(
+                reinterpret_cast<const char*>(temporary_memoryContent.value().data()),
+                temporary_memoryContent.value().size()
+            );
+
+            std::string terminator = "\r\n\r\n";
+            std::size_t findResult_string = temporary_string.find(terminator);
+
+            std::shared_ptr<lunarfilament_connection> temporaryPointer = connection.shared_from_this();
+            if(findResult_string == std::string::npos){
+                // leave the state as the reading headers
+                // then wait for more socket read notification
+                connection.fileDescriptor.async_wait(
+                    boost::asio::posix::stream_descriptor::wait_read,
+                    [this, temporaryPointer](const boost::system::error_code& error){
+                        std::shared_ptr<boost::asio::posix::stream_descriptor> socket_watcher = 
+                                        std::make_shared<boost::asio::posix::stream_descriptor>(
+                                            lunarfilament_io_context, 
+                                            temporaryPointer->fileDescriptor.native_handle());
+                        if(!error){clientRead(socket_watcher, temporaryPointer);}
+                    }
+                );
+            }// the closure of the if branch
+
+            
+        }// the end of the member function
+
+        std::expected<void, std::string> timeoutGarbageCollector(){}
 };
