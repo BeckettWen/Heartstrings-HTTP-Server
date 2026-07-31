@@ -48,6 +48,9 @@ struct lunarfilament_connection: public std::enable_shared_from_this<lunarfilame
 
     std::size_t parseBuffer, parseCursor = 0;
 
+    // this is the parse cursor
+    std::string::iterator buffer_parse_cursor;
+
     // here is the custom read and the write buffer of the customized connection machine
     // also use the memory allocator to manage the memory efficiently
     std::size_t buffer_read;
@@ -221,7 +224,7 @@ class lunarfilament{
             }
         } // this bracket is the end of this member function
 
-        // MARK: Member Functions
+        // MARK: client write
         std::expected<void, std::string> clientWrite(lunarfilament_connection& connection){
 
             auto self = connection.shared_from_this();
@@ -372,6 +375,8 @@ class lunarfilament{
             std::size_t findResult_string = temporary_string.find(terminator);
 
             std::shared_ptr<lunarfilament_connection> temporaryPointer = connection.shared_from_this();
+
+            // Reading Headers Processing
             if(findResult_string == std::string::npos){
                 // leave the state as the reading headers
                 // then wait for more socket read notification
@@ -385,6 +390,45 @@ class lunarfilament{
                         if(!error){clientRead(socket_watcher, temporaryPointer);}
                     }
                 );
+            }else{
+
+                // advance the parse cursor ahead of the header and push it to the body
+                connection.buffer_parse_cursor = temporary_string.begin();
+
+                // if no payload exists, transit the state from reading body to the processing
+                if(temporary_string.empty()){
+                    connection.state = ConnState::PROCESSING;
+                }
+                else{
+                    connection.state = ConnState::READING_BODY;
+                }
+
+                std::vector<std::uint8_t> temporary_dataTransfer(temporary_string.begin(), temporary_string.end());
+                // passes the parsed http response to the universal parser
+                universalParser.inputData(temporary_dataTransfer);
+                std::expected<HTTPRequest, HTTPParserError> parseResult = universalParser.parse();
+
+                std::vector<std::uint8_t> temporary_temporaryBuffer;
+
+                // tracking the payload data against the content length threshold
+                if(parseResult){
+
+                    // find the content length
+                    std::unordered_map<std::string, std::string>::iterator find_contentLength 
+                        = parseResult.value().headers.find("content-length");
+
+                    // suspends until the read bytes reaches the content length
+                    std::string temporary_bodyRead(parseResult.value().body.begin(), 
+                    parseResult.value().body.begin() + std::stoi((*find_contentLength).second));
+
+
+                }
+                else{ return std::unexpected<std::string>(std::to_string(static_cast<int>(parseResult.error()))); }
+
+                // the processing to write response phase
+
+                
+
             }// the closure of the if branch
 
             

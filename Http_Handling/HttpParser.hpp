@@ -14,7 +14,7 @@
 // Equivalent to Swift's Data type
 using Data = std::vector<std::uint8_t>;
 
-enum class HTTPParserError {
+enum class HTTPParserError: int {
     InvalidStartLine,
     InvalidHeaderSyntax,
     InvalidContentLength,
@@ -224,4 +224,9 @@ private:
         }
         return full_body;
     }
+
+
+    public:
+    // MARK: Updated Member Function
+    std::expected<void, std::string> inputData(Data& input_data){ data_ = input_data; }
 };
