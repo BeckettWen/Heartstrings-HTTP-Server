@@ -417,17 +417,36 @@ class lunarfilament{
                     std::unordered_map<std::string, std::string>::iterator find_contentLength 
                         = parseResult.value().headers.find("content-length");
 
-                    // suspends until the read bytes reaches the content length
-                    std::string temporary_bodyRead(parseResult.value().body.begin(), 
-                    parseResult.value().body.begin() + std::stoi((*find_contentLength).second));
-
-
+                    std::size_t indicator = 0;
+                    while (indicator < std::stoi(find_contentLength->second) || connection.buffer_parse_cursor == temporary_string.end())
+                    {
+                        temporary_temporaryBuffer.emplace_back(*(connection.buffer_parse_cursor));
+                        indicator ++;
+                        connection.buffer_parse_cursor ++;
+                    }
                 }
                 else{ return std::unexpected<std::string>(std::to_string(static_cast<int>(parseResult.error()))); }
 
                 // the processing to write response phase
 
+                // construct the response frame and enqueue that into the outbound connection
+                ResponseFrame temporary_frame;
+                std::unordered_map<std::string, std::string>::iterator find_headers
+                    = parseResult.value().headers.find("headers");
                 
+                std::unordered_map<std::string, std::string>::iterator find_body
+                    = parseResult.value().headers.find("body");
+
+                temporary_frame = { find_headers->second, find_body->second, 0};
+
+                // enque the parsed frame into the queue
+                connection.outboundConnection.push(temporary_frame);
+
+                connection.state = ConnState::WRITING_RESPONSES;
+
+                // trigger the non-blocking writing response function
+                
+
 
             }// the closure of the if branch
 

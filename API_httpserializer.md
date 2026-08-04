@@ -8,3 +8,4 @@ contains: StatusCode (integer), StatusReason (string), headers (unordered map, k
 
 *Member Functions*
 
+**Initializer**
