@@ -363,7 +363,7 @@ class lunarfilament{
                 memoryAllocator.readData(connection.buffer_read);
             
             // if the error occurs, finish the function immediately
-            if(temporary_memoryContent){ return std::unexpected<std::string>(temporary_memoryContent.error()); }
+            if(!temporary_memoryContent){ return std::unexpected<std::string>(temporary_memoryContent.error()); }
 
             // cast the raw bytes into standard string
             std::string temporary_string(
@@ -418,12 +418,15 @@ class lunarfilament{
                         = parseResult.value().headers.find("content-length");
 
                     std::size_t indicator = 0;
-                    while (indicator < std::stoi(find_contentLength->second) || connection.buffer_parse_cursor == temporary_string.end())
-                    {
-                        temporary_temporaryBuffer.emplace_back(*(connection.buffer_parse_cursor));
-                        indicator ++;
-                        connection.buffer_parse_cursor ++;
-                    }
+                    // register for the async wait to read
+                    connection.fileDescriptor.async_wait(boost::asio::posix::stream_descriptor::wait_read,
+                    [this, temporaryPointer](const boost::system::error_code& error){
+                        std::shared_ptr<boost::asio::posix::stream_descriptor> socket_watcher = 
+                                        std::make_shared<boost::asio::posix::stream_descriptor>(
+                                            lunarfilament_io_context, 
+                                            temporaryPointer->fileDescriptor.native_handle());
+                        if(!error){clientRead(socket_watcher, temporaryPointer);}
+                    });
                 }
                 else{ return std::unexpected<std::string>(std::to_string(static_cast<int>(parseResult.error()))); }
 
@@ -445,7 +448,7 @@ class lunarfilament{
                 connection.state = ConnState::WRITING_RESPONSES;
 
                 // trigger the non-blocking writing response function
-                
+                clientWrite(connection);
 
 
             }// the closure of the if branch
