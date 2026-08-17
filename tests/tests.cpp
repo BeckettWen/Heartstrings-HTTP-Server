@@ -9,6 +9,7 @@
 #include "../Http_Handling/HttpSerializer.h"
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Subsystems/Aegis.hpp"
+#include "../NetworkingCore/Lunafilament.hpp"
 
 TEST(unittests, serializertest){
     //preparation for the test
@@ -43,6 +44,8 @@ TEST(unittests, serializertest){
     // 2. Now check the actual output
     EXPECT_EQ(finalizedRequest, answer);
 }
+
+TEST(unittests, networking_test){}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
