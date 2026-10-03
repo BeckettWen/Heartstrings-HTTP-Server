@@ -10,6 +10,8 @@
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Subsystems/Aegis.hpp"
 #include "../NetworkingCore/Lunafilament.hpp"
+#include "Subsystems/StateMachine.hpp"
+#include "Subsystems/ThreadPool.hpp"
 
 TEST(unittests, serializertest){
     //preparation for the test
