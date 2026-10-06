@@ -7,6 +7,6 @@ export module Heartstrings_C;
 
 struct version_info{
     std::string version = "Valley River";
-    std::string minor_version = "10240";
+    std::string minor_version = "10245";
     std::string channel = "Beta";
 };

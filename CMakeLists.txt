@@ -34,12 +34,12 @@ find_package(GTest REQUIRED)
 # Define your executable name and source files
 
 
-add_executable(unit-tests
+add_executable(tests
     tests/tests.cpp
 )
 
 target_link_libraries(
-    unit-tests
+    tests
     PRIVATE
     GTest::gtest_main
     GTest::gtest
@@ -47,4 +47,4 @@ target_link_libraries(
 )
 
 include(GoogleTest)
-gtest_discover_tests(unit-tests)
+gtest_discover_tests(tests)
