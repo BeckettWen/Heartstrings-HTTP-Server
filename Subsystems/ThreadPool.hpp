@@ -72,6 +72,8 @@ namespace Aegis_ThreadPool {
             } catch (std::exception& exception) {
                 return std::unexpected<thread_StatusCode>(Failure);
             }
+            
+            return {};
         }
 
     };

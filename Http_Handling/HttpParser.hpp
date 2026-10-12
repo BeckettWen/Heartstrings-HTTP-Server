@@ -228,5 +228,5 @@ private:
 
     public:
     // MARK: Updated Member Function
-    std::expected<void, std::string> inputData(Data& input_data){ data_ = input_data; }
+    std::expected<void, std::string> inputData(Data& input_data){ data_ = input_data; return {}; }
 };
