@@ -5,6 +5,9 @@
 #include <thread>
 #include <functional>
 #include <any>
+#include <expected>
+
+#include "VersionInfo.h"
 
 namespace Aegis_ThreadPool {
 

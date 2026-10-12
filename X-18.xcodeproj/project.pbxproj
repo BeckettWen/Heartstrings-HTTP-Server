@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		2E69AED0307D0480001A6176 /* tests.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2EC945FF307C884A00C0D7A3 /* tests.cpp */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		2EC94603307C887500C0D7A3 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -31,14 +35,6 @@
 		2EC94605307C887500C0D7A3 /* test */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = test; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedRootGroup section */
-		2EC94606307C887500C0D7A3 /* test */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = test;
-			sourceTree = "<group>";
-		};
-/* End PBXFileSystemSynchronizedRootGroup section */
-
 /* Begin PBXFrameworksBuildPhase section */
 		2EC94602307C887500C0D7A3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -57,7 +53,6 @@
 				2EC945F9307C884A00C0D7A3 /* NetworkingCore */,
 				2EC945FE307C884A00C0D7A3 /* Subsystems */,
 				2EC94600307C884A00C0D7A3 /* tests */,
-				2EC94606307C887500C0D7A3 /* test */,
 				2EC945EA307C87F000C0D7A3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -119,9 +114,6 @@
 			);
 			buildRules = (
 			);
-			fileSystemSynchronizedGroups = (
-				2EC94606307C887500C0D7A3 /* test */,
-			);
 			name = test;
 			productName = test;
 			productReference = 2EC94605307C887500C0D7A3 /* test */;
@@ -164,6 +156,7 @@
 		2EC94601307C887500C0D7A3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				2E69AED0307D0480001A6176 /* tests.cpp in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -221,13 +214,23 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/include,
+					/opt/homebrew/Cellar/boost/1.90.0_1/include,
+				);
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/lib,
+					/opt/homebrew/Cellar/boost/1.90.0_1/lib,
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = (
+					"-lgtest",
+					"$(inherited)",
+				);
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -278,12 +281,22 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/include,
+					/opt/homebrew/Cellar/boost/1.90.0_1/include,
+				);
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/lib,
+					/opt/homebrew/Cellar/boost/1.90.0_1/lib,
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = (
+					"-lgtest",
+					"$(inherited)",
+				);
 				SDKROOT = macosx;
 			};
 			name = Release;
