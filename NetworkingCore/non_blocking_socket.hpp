@@ -15,6 +15,9 @@ struct basic_socket {
     
     boost::asio::ip::tcp target_ip;
     boost::asio::ip::tcp::socket socket;
+    
+    // this is the universal data container
+    std::vector<std::byte> socket_data;
 };
 
 struct server_socket {
@@ -33,5 +36,9 @@ struct client_socket{
 // here is the core part of the non_blocking_socket
 struct non_blocking_socket{
 private:
+    // this is the general two types of socket, while you can abort any of them
+    server_socket s_server;
+    client_socket c_server;
+    
     
 };
