@@ -18,6 +18,17 @@ struct basic_socket {
     
     // this is the universal data container
     std::vector<std::byte> socket_data;
+    
+    std::expected<void, std::string> set_non_blocking(){
+        try {
+            // here should use the fcntl function as the native solution,
+            // but i want to make two version, one is the cross platform while the other is not
+            socket.non_blocking(true);
+            return {};
+        } catch (std::exception& error) {
+            return std::unexpected<std::string>("Failed to set the socket non blocking\n");
+        }
+    }
 };
 
 struct server_socket {

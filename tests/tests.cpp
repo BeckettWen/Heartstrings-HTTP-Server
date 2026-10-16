@@ -12,6 +12,7 @@
 #include "../Subsystems/StateMachine.hpp"
 #include "../Subsystems/ThreadPool.hpp"
 #include "../NetworkingCore/non_blocking_socket.hpp"
+#include "../NetworkingCore/non_blocking_native.h"
 
 TEST(unittests, serializertest){
     //preparation for the test

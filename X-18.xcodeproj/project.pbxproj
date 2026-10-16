@@ -22,6 +22,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		2EB11D1A30824478000CA908 /* non_blocking_native.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = non_blocking_native.h; sourceTree = "<group>"; };
 		2EC945F3307C884A00C0D7A3 /* API_httpparser.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpparser.md; sourceTree = "<group>"; };
 		2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpserializer.md; sourceTree = "<group>"; };
 		2EC945F5307C884A00C0D7A3 /* HttpParser.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = HttpParser.hpp; sourceTree = "<group>"; };
@@ -77,6 +78,7 @@
 		2EC945F9307C884A00C0D7A3 /* NetworkingCore */ = {
 			isa = PBXGroup;
 			children = (
+				2EB11D1A30824478000CA908 /* non_blocking_native.h */,
 				2EC945F8307C884A00C0D7A3 /* non_blocking_socket.hpp */,
 			);
 			path = NetworkingCore;
