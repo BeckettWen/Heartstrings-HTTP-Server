@@ -28,6 +28,9 @@ private:
     
     int general_kqueue = kqueue();
     
+    // this is the changelist used in the kevent
+    struct kevent changelist;
+    
 public:
     // here is the function section of the native socket
     socket_native(int port): s_port(port){}
@@ -65,6 +68,23 @@ public:
         }
         
         set_socket_nonblocking(sockets_vector[socket_index]);
+        return {};
+    }
+    
+    // here creates the non-blocking socket with kqueue
+    std::expected<void, std::string> set_non_blocking(int& index){
+        // fill the registration with the evset function
+        EV_SET(&changelist, sockets_vector[index], EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+        
+        // set the nonblocking with kevent
+        const int result_non_blocking = kevent(general_kqueue, &changelist, 1, nullptr, 0, nullptr);
+        if (result_non_blocking == -1) {
+            // here also use the same mechanism to collect the error and output it
+            std::error_code(error_code)(result_non_blocking, std::generic_category());
+            close(sockets_vector[index]);
+            std::string error_message = "Failed at set_non_blocking:" + error_code.message();
+            return std::unexpected<std::string>(error_message);
+        }
         return {};
     }
     
