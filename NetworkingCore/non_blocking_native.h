@@ -10,6 +10,7 @@
 #include <vector>
 #include <unistd.h>
 #include <system_error>
+#include <unordered_map>
 
 // these two macros are set to define the behaviour on the socket operations
 #define allowed 1
@@ -31,9 +32,19 @@ private:
     // this is the changelist used in the kevent
     struct kevent changelist;
     
+    // here will add a flag to differentiate the listener socket and the client socket
+    // true is the client socket, while the false is the listener socket
+    std::unordered_map<int, bool>(socket_type_table);
+    
+    // this is the vector that holds the kevent bytes, which is also a vector
+    std::vector<std::array<struct kevent, 64>>(kevent_vector);
+    
 public:
     // here is the function section of the native socket
-    socket_native(int port): s_port(port){}
+    socket_native(int port): s_port(port){
+        // initialize the vector with one empty vector to prevent the segmentation fault
+        kevent_vector.resize(1);
+    }
     ~socket_native(){}
     
     std::expected<void, std::string> set_listening_socket(int& socket_index){
@@ -85,6 +96,43 @@ public:
             std::string error_message = "Failed at set_non_blocking:" + error_code.message();
             return std::unexpected<std::string>(error_message);
         }
+        return {};
+    }
+    
+    std::expected<void, std::string> listen_and_handle(int& index_socket){
+        // now is the actual listening process
+        // check if there is any active event, if not, then the kevent should wait
+        int event_count = kevent(general_kqueue, nullptr, 0, kevent_vector[index_socket].data(), 64, nullptr);
+        
+        // now if the error or anything interrupted the kevent, then the event_count variable should be -1
+        // which in this case, the signal interruption should not be counted as the error
+        
+        // use the same mechanism, :) should make it a function in the later process, but not what i would
+        // do in the current constructing process
+        if(event_count == -1){
+            if (errno == EINTR) {};  // A signal interrupted the wait.
+            // here also use the same mechanism to collect the error and output it
+            std::error_code(error_code)(event_count, std::generic_category());
+            close(sockets_vector[index_socket]);
+            std::string error_message = "Failed at kevent:" + error_code.message();
+            return std::unexpected<std::string>(error_message);
+        }
+        
+        // now actual process all the events
+        for(int event_count_process_loop = 0; event_count_process_loop < event_count; event_count_process_loop ++){
+            
+            // here stripes out the file descriptor from the event vector
+            int file_descriptor = static_cast<int>(kevent_vector[index_socket][event_count_process_loop].ident);
+            
+            // now handles the logic of if its time to read or time to write
+            if(kevent_vector[index_socket][event_count_process_loop].filter == EVFILT_WRITE){
+                // executes the write function, which will be implemented the next day
+            }
+            else if(kevent_vector[index_socket][event_count_process_loop].filter == EVFILT_READ){
+                // executes the read function, also, next day
+            }
+        }
+        
         return {};
     }
     
