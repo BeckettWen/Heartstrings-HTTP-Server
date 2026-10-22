@@ -5,12 +5,14 @@
 #include <iostream>
 #include <fcntl.h>
 #include <sys/event.h>
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <expected>
 #include <vector>
 #include <unistd.h>
 #include <system_error>
 #include <unordered_map>
+
 
 // these two macros are set to define the behaviour on the socket operations
 #define allowed 1
@@ -23,7 +25,7 @@ private:
     // when necessary, this vector will be taken over by the system
     std::vector<int>(sockets_vector);
     
-    sockaddr_in address{};
+    sockaddr address{};
     int socket_operation_status = allowed;
     int s_port;
     
@@ -39,6 +41,10 @@ private:
     // this is the vector that holds the kevent bytes, which is also a vector
     std::vector<std::array<struct kevent, 64>>(kevent_vector);
     
+    // this is the write buffer, stores the data that want to be write
+    // you can push the data in advance
+    std::unordered_map<int, std::vector<std::byte>>(buffer_vector);
+    
 public:
     // here is the function section of the native socket
     socket_native(int port): s_port(port){
@@ -52,9 +58,7 @@ public:
         setsockopt(sockets_vector[socket_index], SOL_SOCKET, SO_REUSEADDR, &socket_operation_status, sizeof(allowed));
         
         // here is the pre-bind process
-        address.sin_family = AF_INET;
-        address.sin_port = htons(s_port);
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
+        address.sa_family = AF_INET;
         
         // bind the socket to the actual port and listen
         int result_bind = bind(sockets_vector[socket_index], reinterpret_cast<sockaddr*>(&address), sizeof(address));
@@ -126,12 +130,61 @@ public:
             
             // now handles the logic of if its time to read or time to write
             if(kevent_vector[index_socket][event_count_process_loop].filter == EVFILT_WRITE){
-                // executes the write function, which will be implemented the next day
+                // executes the write function
+                // no need to check the flag cause the listener socket doesn't write
+                // first search the buffer to find which to write
+                std::unordered_map<int, std::vector<std::byte>>::iterator find_result_filedescriptor =
+                    buffer_vector.find(file_descriptor);
+                
+                if(find_result_filedescriptor == buffer_vector.end() || (*find_result_filedescriptor).second.empty()){
+                    return std::unexpected<std::string>("No record or data to write");
+                }
+                
+                int result_write = static_cast<int>(write(file_descriptor, (*find_result_filedescriptor).second.data(), (*find_result_filedescriptor).second.size()));
+                
+                // error handling of the write function
+                if(result_write == -1){
+                    if (errno == EINTR) {};  // A signal interrupted the wait.
+                    // here also use the same mechanism to collect the error and output it
+                    std::error_code(error_code)(result_write, std::generic_category());
+                    close(sockets_vector[index_socket]);
+                    std::string error_message = "Failed at kevent:" + error_code.message();
+                    return std::unexpected<std::string>(error_message);
+                }
+                
+                return {};
             }
             else if(kevent_vector[index_socket][event_count_process_loop].filter == EVFILT_READ){
-                // executes the read function, also, next day
+                // now route the different path based on the flag of the socket
+                // if the listener, accept connections, if the client, read the data
+                std::unordered_map<int, bool>::iterator find_result_sockettype = socket_type_table.find(index_socket);
+                if(!(*find_result_sockettype).second){
+                    int new_created_socket = accept(sockets_vector[index_socket], nullptr, nullptr);
+                    
+                    // push the new created socket back to the socket vector
+                    sockets_vector.emplace_back(new_created_socket);
+                    socket_type_table.insert({new_created_socket, true});
+                }
+                else{
+                    // here writes the read operation
+                    // first check if the socket has a buffer vector, if not, add one
+                    auto check_result_bufferobtained = buffer_vector.find(sockets_vector[index_socket]);
+                    if(check_result_bufferobtained == buffer_vector.end()){
+                        buffer_vector.insert({sockets_vector[index_socket], std::vector<std::byte>()});
+                        check_result_bufferobtained = buffer_vector.find(sockets_vector[index_socket]);
+                    }
+                    
+                    long result_buffer_read = read(sockets_vector[index_socket], (*check_result_bufferobtained).second.data(), 1024);
+                    
+                    // now handles the result of the read function
+                    while(result_buffer_read != 0){
+                        result_buffer_read = read(sockets_vector[index_socket], (*check_result_bufferobtained).second.data(), 1024);
+                    }
+                }
+                
+                return {};
             }
-        }
+        } // this bracket is the huge for loop
         
         return {};
     }

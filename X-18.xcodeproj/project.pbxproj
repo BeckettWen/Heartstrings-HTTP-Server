@@ -27,7 +27,6 @@
 		2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpserializer.md; sourceTree = "<group>"; };
 		2EC945F5307C884A00C0D7A3 /* HttpParser.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = HttpParser.hpp; sourceTree = "<group>"; };
 		2EC945F6307C884A00C0D7A3 /* HttpSerializer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HttpSerializer.h; sourceTree = "<group>"; };
-		2EC945F8307C884A00C0D7A3 /* non_blocking_socket.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = non_blocking_socket.hpp; sourceTree = "<group>"; };
 		2EC945FA307C884A00C0D7A3 /* Aegis.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Aegis.hpp; sourceTree = "<group>"; };
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
@@ -79,7 +78,6 @@
 			isa = PBXGroup;
 			children = (
 				2EB11D1A30824478000CA908 /* non_blocking_native.h */,
-				2EC945F8307C884A00C0D7A3 /* non_blocking_socket.hpp */,
 			);
 			path = NetworkingCore;
 			sourceTree = "<group>";
@@ -216,14 +214,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/Cellar/googletest/1.17.0/include,
-					/opt/homebrew/Cellar/boost/1.90.0_1/include,
-				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/Cellar/googletest/1.17.0/lib,
-					/opt/homebrew/Cellar/boost/1.90.0_1/lib,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -283,14 +275,8 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = (
-					/opt/homebrew/Cellar/googletest/1.17.0/include,
-					/opt/homebrew/Cellar/boost/1.90.0_1/include,
-				);
-				LIBRARY_SEARCH_PATHS = (
-					/opt/homebrew/Cellar/googletest/1.17.0/lib,
-					/opt/homebrew/Cellar/boost/1.90.0_1/lib,
-				);
+				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
