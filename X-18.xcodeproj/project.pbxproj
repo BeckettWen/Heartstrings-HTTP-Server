@@ -31,6 +31,7 @@
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
 		2EC945FD307C884A00C0D7A3 /* VersionInfo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VersionInfo.h; sourceTree = "<group>"; };
+		A18C10001000000000000001 /* ProjectVersionInfo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ProjectVersionInfo.h; sourceTree = "<group>"; };
 		2EC945FF307C884A00C0D7A3 /* tests.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = tests.cpp; sourceTree = "<group>"; };
 		2EC94605307C887500C0D7A3 /* test */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = test; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -49,6 +50,7 @@
 			children = (
 				2EC945F3307C884A00C0D7A3 /* API_httpparser.md */,
 				2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */,
+				A18C10001000000000000001 /* ProjectVersionInfo.h */,
 				2EC945F7307C884A00C0D7A3 /* Http_Handling */,
 				2EC945F9307C884A00C0D7A3 /* NetworkingCore */,
 				2EC945FE307C884A00C0D7A3 /* Subsystems */,

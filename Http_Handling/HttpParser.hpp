@@ -7,9 +7,11 @@
 #include <unordered_map>
 #include <expected>
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <ranges>
 #include <charconv>
+#include <utility>
 
 // Equivalent to Swift's Data type
 using Data = std::vector<std::uint8_t>;
@@ -52,15 +54,16 @@ namespace string_utils {
     inline std::vector<std::string_view> split(std::string_view str, char delim) {
         std::vector<std::string_view> out;
 
-        auto begin = str.begin();
-        for (auto it = str.begin(); it != str.end(); ++it) {
-            if (*it == delim) {
-                out.emplace_back(&*begin, std::distance(begin, it));
-                begin = it + 1;
+        std::size_t begin = 0;
+        while (true) {
+            const std::size_t delimiter = str.find(delim, begin);
+            if (delimiter == std::string_view::npos) {
+                out.emplace_back(str.substr(begin));
+                break;
             }
+            out.emplace_back(str.substr(begin, delimiter - begin));
+            begin = delimiter + 1;
         }
-
-        out.emplace_back(&*begin, std::distance(begin, str.end()));
         return out;
     }
 }
@@ -82,7 +85,8 @@ public:
         if (!start_line_res) return std::unexpected(start_line_res.error());
 
         auto start_line_parts = string_utils::split(*start_line_res, ' ');
-        if (start_line_parts.size() != 3) {
+        if (start_line_parts.size() != 3 || start_line_parts[0].empty() ||
+            start_line_parts[1].empty() || start_line_parts[2].empty()) {
             return std::unexpected(HTTPParserError::InvalidStartLine);
         }
 
@@ -106,7 +110,7 @@ public:
             }
 
             auto colon_pos = line.find(':');
-            if (colon_pos == std::string_view::npos) {
+            if (colon_pos == std::string_view::npos || colon_pos == 0) {
                 return std::unexpected(HTTPParserError::InvalidHeaderSyntax);
             }
 
@@ -123,7 +127,7 @@ public:
 
         // PHASE 3: Message Body Length Determination
         if (request.headers.contains("transfer-encoding") &&
-            request.headers["transfer-encoding"].find("chunked") != std::string::npos) {
+            string_utils::to_lower(request.headers["transfer-encoding"]).find("chunked") != std::string::npos) {
             // PHASE 4: Body Extraction (Chunked)
             if (auto chunk_res = parse_chunked_body(); chunk_res) {
                 request.body = std::move(*chunk_res);
@@ -137,7 +141,7 @@ public:
             std::size_t length = 0;
             auto [ptr, ec] = std::from_chars(content_length_str.data(), content_length_str.data() + content_length_str.size(), length);
 
-            if (ec != std::errc{}) {
+            if (ec != std::errc{} || ptr != content_length_str.data() + content_length_str.size()) {
                 return std::unexpected(HTTPParserError::InvalidContentLength);
             }
 
@@ -167,24 +171,30 @@ private:
 
     std::expected<std::string, HTTPParserError> read_line() {
         std::string line;
+        bool line_terminated = false;
         while (cursor_ < data_.size()) {
             const auto byte = data_[cursor_];
             ++cursor_;
             if (byte == 0x0A) { // LF
+                line_terminated = true;
                 break;
             } else if (byte == 0x0D) { // CR
                 if (cursor_ < data_.size() && data_[cursor_] == 0x0A) {
                     ++cursor_; // Skip following LF
                 }
+                line_terminated = true;
                 break;
             }
             line.push_back(static_cast<char>(byte));
+        }
+        if (!line_terminated) {
+            return std::unexpected(HTTPParserError::UnexpectedEOF);
         }
         return line;
     }
 
     std::expected<Data, HTTPParserError> read_bytes(std::size_t count) {
-        if (cursor_ + count > data_.size()) {
+        if (count > data_.size() - cursor_) {
             return std::unexpected(HTTPParserError::UnexpectedEOF);
         }
         auto start = data_.begin() + cursor_;
@@ -211,7 +221,15 @@ private:
             }
 
             if (chunk_size == 0) {
-                if (auto consume = read_line(); !consume) return std::unexpected(consume.error()); // Consume final CRLF
+                // Consume an optional trailer section, ending with an empty line.
+                while (true) {
+                    auto trailer_res = read_line();
+                    if (!trailer_res) return std::unexpected(trailer_res.error());
+                    if (trailer_res->empty()) break;
+                    if (trailer_res->find(':') == std::string::npos) {
+                        return std::unexpected(HTTPParserError::InvalidHeaderSyntax);
+                    }
+                }
                 break;
             }
 
@@ -220,7 +238,9 @@ private:
 
             full_body.insert(full_body.end(), bytes_res->begin(), bytes_res->end());
 
-            if (auto consume = read_line(); !consume) return std::unexpected(consume.error()); // Consume CRLF after chunk data
+            auto consume = read_line();
+            if (!consume) return std::unexpected(consume.error());
+            if (!consume->empty()) return std::unexpected(HTTPParserError::InvalidHeaderSyntax);
         }
         return full_body;
     }
@@ -228,5 +248,9 @@ private:
 
     public:
     // MARK: Updated Member Function
-    std::expected<void, std::string> inputData(Data& input_data){ data_ = input_data; return {}; }
+    std::expected<void, std::string> inputData(Data& input_data){
+        data_ = input_data;
+        cursor_ = 0;
+        return {};
+    }
 };

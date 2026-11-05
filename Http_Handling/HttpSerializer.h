@@ -1,103 +1,145 @@
 #pragma once
 
-
+#include <algorithm>
+#include <cerrno>
+#include <cctype>
+#include <cstdint>
 #include <expected>
+#include <map>
+#include <ranges>
 #include <string>
-#include <sys/uio.h>
-#include <unistd.h>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "HttpParser.hpp"
 
-#define universalCode "\r\n"
+inline constexpr char universalCode[] = "\r\n";
 
-struct httpresponse{
-    int statusCode;
-    std::string statusReason;
+struct httpresponse {
+    int statusCode = 200;
+    std::string statusReason = "OK";
     std::unordered_map<std::string, std::string> headers;
     std::string body;
 };
 
 inline std::unordered_map<HTTPParserError, int> statusCodeSet{
-    {HTTPParserError::InvalidContentLength, 400}
+    {HTTPParserError::InvalidStartLine, 400},
+    {HTTPParserError::InvalidHeaderSyntax, 400},
+    {HTTPParserError::InvalidContentLength, 400},
+    {HTTPParserError::UnexpectedEOF, 400},
+    {HTTPParserError::IllegalWhitespace, 400}
 };
 
 inline std::unordered_map<int, std::string> statusCodeToText{
+    {200, "OK"},
     {400, "Bad Request"},
-    {200, "OK"}
+    {500, "Internal Server Error"}
 };
 
-//MARK: HTTP Serializer
-class httpSerializer{
-    protected:
+class httpSerializer {
+protected:
     std::vector<std::uint8_t> serializedHTTPRequest;
-    HTTPRequest request;
 
-    public:
+    static std::string lowercase(std::string value) {
+        std::ranges::transform(value, value.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return value;
+    }
+
+public:
     std::vector<std::uint8_t> buffer;
 
-    httpSerializer(): serializedHTTPRequest({}), buffer({}){}
-    ~httpSerializer(){}
+    httpSerializer() = default;
 
-    std::vector<std::uint8_t> ReturnSerializedResult(){ return serializedHTTPRequest; }
+    std::vector<std::uint8_t> ReturnSerializedResult() const {
+        return serializedHTTPRequest;
+    }
 
-    std::expected<void, std::string> Serialize(HTTPParser& universalParser){
-        //you know, i want to embed as much modern cpp as much into my code
-        std::string statusCodeMessage;
-        int statusCode;
+    std::expected<void, std::string> Serialize(const httpresponse& response) {
+        serializedHTTPRequest.clear();
 
-        //call the parser to stretch the parsed header and body for the serializer
-        auto middleconvertion = universalParser.parse();
-        if(middleconvertion.has_value()){
-            request = middleconvertion.value();
-        }
-        else{
-            std::tie(statusCode, statusCodeMessage) = findTextWithCode(middleconvertion.error());
-            return std::unexpected(statusCodeMessage);
+        std::string reason = response.statusReason;
+        if (reason.empty()) {
+            const auto known_status = statusCodeToText.find(response.statusCode);
+            reason = known_status == statusCodeToText.end() ? "Unknown" : known_status->second;
         }
 
-        //the emplace of the version in the head of the serializer
-        serializedHTTPRequest.insert( serializedHTTPRequest.end() ,request.version.begin(), request.version.end());
-        serializedHTTPRequest.emplace_back(static_cast<uint8_t>(' '));
+        const std::string status_line = "HTTP/1.1 " + std::to_string(response.statusCode) +
+            " " + reason + universalCode;
+        serializedHTTPRequest.insert(serializedHTTPRequest.end(), status_line.begin(), status_line.end());
 
-        //the emplace of the status code
-        auto tempstoreCodeStatus = statusCodeToText.find(200);
-        std::string temporaryString = std::string(
-                std::to_string((*tempstoreCodeStatus).first)+" "+(*tempstoreCodeStatus).second+universalCode);
-        serializedHTTPRequest.insert( serializedHTTPRequest.end() ,temporaryString.begin(), temporaryString.end());
-
-        //emmm, is this right? idk, maybe when i add the gtest after i learn how to add gtest
-        //and may be tomorrow, who knows?
-        for (const auto& [key, value] : request.headers) {
-            // Explicitly add the colon, space, and a newline for EACH header
-            std::string headerLine = key + ": " + value + universalCode;
-
-            serializedHTTPRequest.insert(serializedHTTPRequest.end(), headerLine.begin(), headerLine.end());
+        std::map<std::string, std::string> ordered_headers;
+        bool has_connection_header = false;
+        for (const auto& [name, value] : response.headers) {
+            const std::string normalized_name = lowercase(name);
+            if (normalized_name == "content-length") continue;
+            if (normalized_name == "connection") has_connection_header = true;
+            ordered_headers[name] = value;
         }
-        std::string temporary = std::string(universalCode);
-        serializedHTTPRequest.insert( serializedHTTPRequest.end(), temporary.begin(), temporary.end());
+        ordered_headers["Content-Length"] = std::to_string(response.body.size());
+        if (!has_connection_header) ordered_headers["Connection"] = "close";
 
-        //push the body into the serialized http request
-        serializedHTTPRequest.insert(serializedHTTPRequest.end(), request.body.begin(), request.body.end());
-
+        for (const auto& [name, value] : ordered_headers) {
+            const std::string header_line = name + ": " + value + universalCode;
+            serializedHTTPRequest.insert(serializedHTTPRequest.end(), header_line.begin(), header_line.end());
+        }
+        serializedHTTPRequest.insert(serializedHTTPRequest.end(), universalCode, universalCode + 2);
+        serializedHTTPRequest.insert(serializedHTTPRequest.end(), response.body.begin(), response.body.end());
         return {};
     }
 
-    std::expected<void, std::string> writeToBuffer(int& systemSocket){
-        int writeStatus = write(systemSocket, serializedHTTPRequest.data(), serializedHTTPRequest.size());
-        if(writeStatus == -1){ return std::unexpected<std::string>("write to the socket failed");}
-        else{ return {}; }
+    // Compatibility convenience: parse a request and return a 200 response
+    // that echoes its body, matching the initial server behavior.
+    std::expected<void, std::string> Serialize(HTTPParser& parser) {
+        auto parsed_request = parser.parse();
+        if (!parsed_request) {
+            const auto [status_code, reason] = findTextWithCode(parsed_request.error());
+            return std::unexpected<std::string>(std::to_string(status_code) + " " + reason);
+        }
+
+        std::string body;
+        body.reserve(parsed_request->body.size());
+        for (const std::uint8_t byte : parsed_request->body) {
+            body.push_back(static_cast<char>(byte));
+        }
+
+        httpresponse response{
+            .statusCode = 200,
+            .statusReason = "OK",
+            .headers = {{"Connection", "close"}},
+            .body = std::move(body)
+        };
+        return Serialize(response);
     }
 
-    //MARK: Helper Method
-    std::tuple<int, std::string> findTextWithCode(HTTPParserError error){
-        //don't say why not use auto, well, that would be much less fun isn't it
-        if(statusCodeSet.contains(error)){
-            auto tempStore_Code = statusCodeSet.find(error);
-            auto tempStore_text = statusCodeToText.find((*tempStore_Code).second);
-            return std::make_tuple((*tempStore_text).first, (*tempStore_text).second);
+    std::expected<void, std::string> writeToBuffer(int& systemSocket) {
+        std::size_t bytes_written = 0;
+        while (bytes_written < serializedHTTPRequest.size()) {
+            const ssize_t result = write(
+                systemSocket,
+                serializedHTTPRequest.data() + bytes_written,
+                serializedHTTPRequest.size() - bytes_written);
+            if (result > 0) {
+                bytes_written += static_cast<std::size_t>(result);
+                continue;
+            }
+            if (result == -1 && errno == EINTR) continue;
+            return std::unexpected<std::string>("write to the socket failed");
         }
-        else{ return std::make_tuple(0, ""); }
+        return {};
+    }
+
+    std::tuple<int, std::string> findTextWithCode(HTTPParserError error) const {
+        const auto status = statusCodeSet.find(error);
+        if (status == statusCodeSet.end()) return {400, "Bad Request"};
+
+        const auto reason = statusCodeToText.find(status->second);
+        if (reason == statusCodeToText.end()) return {status->second, "Unknown"};
+        return {reason->first, reason->second};
     }
 };
