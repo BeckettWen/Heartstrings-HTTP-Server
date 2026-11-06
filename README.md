@@ -4,7 +4,9 @@
 
 Heartstrings is a C++23, macOS-focused HTTP server project. It contains a self-written HTTP request parser and response serializer, a non-blocking `kqueue` server with optional OpenSSL TLS, a bounded task scheduler, and an Aegis-backed request-storage adapter.
 
-The overall project version is defined in [`ProjectVersionInfo.h`](ProjectVersionInfo.h): **Valley River 10002 (Beta)**. `Subsystems/VersionInfo.h` describes the subsystem version separately; it is not the X-18 project version.
+The overall project version is defined in [`ProjectVersionInfo.h`](ProjectVersionInfo.h): **Valley River 10008 (Beta)**. `Subsystems/VersionInfo.h` describes the subsystem version separately; it is not the X-18 project version.
+
+> **Beta notice:** Heartstrings X-18 is an experimental, macOS-focused HTTP/1.x server with optional HTTPS, explicit static-file routing, keep-alive, and request pipelining. It is suitable for evaluation and testing, but is not yet recommended for production workloads.
 
 ## Project layout
 
@@ -15,6 +17,8 @@ Http_Handling/
 NetworkingCore/
   non_blocking_native.h   macOS HTTP/HTTPS server and Aegis request storage
   ApplicationHandler.hpp exact file routing and request handler
+  Heartstrings.hpp        compiled, dependency-hiding server API
+  Heartstrings.cpp        implementation of the compiled API
 Subsystems/
   Aegis.hpp               Aegis memory manager
   StateMachine.hpp        State-machine subsystem
@@ -27,6 +31,7 @@ API_httpparser.md         HTTP parser API reference
 API_httpserializer.md     HTTP serializer API reference
 API_tls.md                TLS configuration and behavior
 API_applicationhandler.md File routing and handler API
+API_xcode_library.md     Xcode XCFramework consumption guide
 ProjectVersionInfo.h      X-18 project version information
 ```
 
@@ -64,6 +69,8 @@ if (auto result = server.run(); !result) {
 }
 ```
 
+For use as a prebuilt Xcode library without a separate OpenSSL installation, see the [XCFramework guide](API_xcode_library.md). The current binary in the sibling `X-18 Production` folder supports Apple Silicon only and requires macOS 26.0 or later; the source-level server API above remains available for direct builds.
+
 ## Build and run tests
 
 Requirements: macOS, Xcode with C++23 support, OpenSSL 3, and GoogleTest installed at the include/library paths currently configured in `X-18.xcodeproj/project.pbxproj`. The TLS fixtures in `tests/fixtures/` are test-only.
@@ -88,3 +95,4 @@ The tests cover parser validation and chunk framing, file routing, keep-alive an
 - [HTTP serializer API](API_httpserializer.md)
 - [TLS API and configuration](API_tls.md)
 - [Application handler and routing API](API_applicationhandler.md)
+- [Xcode library API and XCFramework](API_xcode_library.md)
