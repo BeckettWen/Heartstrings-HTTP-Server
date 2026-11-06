@@ -31,13 +31,29 @@ inline std::unordered_map<HTTPParserError, int> statusCodeSet{
     {HTTPParserError::InvalidHeaderSyntax, 400},
     {HTTPParserError::InvalidContentLength, 400},
     {HTTPParserError::UnexpectedEOF, 400},
-    {HTTPParserError::IllegalWhitespace, 400}
+    {HTTPParserError::IllegalWhitespace, 400},
+    {HTTPParserError::InvalidLineEnding, 400},
+    {HTTPParserError::InvalidMethod, 400},
+    {HTTPParserError::InvalidTarget, 400},
+    {HTTPParserError::UnsupportedHttpVersion, 505},
+    {HTTPParserError::InvalidHeaderName, 400},
+    {HTTPParserError::InvalidHeaderValue, 400},
+    {HTTPParserError::MissingHost, 400},
+    {HTTPParserError::ConflictingMessageFraming, 400},
+    {HTTPParserError::UnsupportedTransferEncoding, 501},
+    {HTTPParserError::InvalidChunkSyntax, 400},
+    {HTTPParserError::RequestTooLarge, 413},
+    {HTTPParserError::HeadersTooLarge, 431}
 };
 
 inline std::unordered_map<int, std::string> statusCodeToText{
     {200, "OK"},
     {400, "Bad Request"},
-    {500, "Internal Server Error"}
+    {413, "Payload Too Large"},
+    {500, "Internal Server Error"},
+    {501, "Not Implemented"},
+    {505, "HTTP Version Not Supported"},
+    {431, "Request Header Fields Too Large"}
 };
 
 class httpSerializer {

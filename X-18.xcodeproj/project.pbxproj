@@ -27,6 +27,8 @@
 		2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpserializer.md; sourceTree = "<group>"; };
 		2EC945F5307C884A00C0D7A3 /* HttpParser.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = HttpParser.hpp; sourceTree = "<group>"; };
 		2EC945F6307C884A00C0D7A3 /* HttpSerializer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HttpSerializer.h; sourceTree = "<group>"; };
+		A18C10001000000000000002 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		A18C10001000000000000003 /* API_tls.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_tls.md; sourceTree = "<group>"; };
 		2EC945FA307C884A00C0D7A3 /* Aegis.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Aegis.hpp; sourceTree = "<group>"; };
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
@@ -48,6 +50,8 @@
 		2EC945E0307C87F000C0D7A3 = {
 			isa = PBXGroup;
 			children = (
+				A18C10001000000000000002 /* README.md */,
+				A18C10001000000000000003 /* API_tls.md */,
 				2EC945F3307C884A00C0D7A3 /* API_httpparser.md */,
 				2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */,
 				A18C10001000000000000001 /* ProjectVersionInfo.h */,
@@ -216,8 +220,14 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/include,
+					"/opt/homebrew/opt/openssl@3/include",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/lib,
+					"/opt/homebrew/opt/openssl@3/lib",
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -225,6 +235,8 @@
 				ONLY_ACTIVE_ARCH = YES;
 				OTHER_LDFLAGS = (
 					"-lgtest",
+					"-lssl",
+					"-lcrypto",
 					"$(inherited)",
 				);
 				SDKROOT = macosx;
@@ -277,14 +289,22 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				HEADER_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/include;
-				LIBRARY_SEARCH_PATHS = /opt/homebrew/Cellar/googletest/1.17.0/lib;
+				HEADER_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/include,
+					"/opt/homebrew/opt/openssl@3/include",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					/opt/homebrew/Cellar/googletest/1.17.0/lib,
+					"/opt/homebrew/opt/openssl@3/lib",
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				OTHER_LDFLAGS = (
 					"-lgtest",
+					"-lssl",
+					"-lcrypto",
 					"$(inherited)",
 				);
 				SDKROOT = macosx;
