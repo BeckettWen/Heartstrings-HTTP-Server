@@ -8,8 +8,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <expected>
+#include <filesystem>
 #include <fcntl.h>
 #include <future>
 #include <memory>
@@ -33,8 +35,10 @@
 
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Http_Handling/HttpSerializer.h"
+#include "../Subsystems/StateMachine.hpp"
 #include "../Subsystems/Aegis.hpp"
 #include "../Subsystems/ThreadPool.hpp"
+#include "ApplicationHandler.hpp"
 
 struct TLSConfiguration {
     int port = 0;
@@ -110,12 +114,49 @@ public:
 
 class socket_native {
 private:
+    enum class connection_state {
+        ReadingHeaders,
+        KeepAlive,
+        Closing
+    };
+
+    enum class connection_event {
+        RequestParsed,
+        ResponseCompleted,
+        CloseRequested
+    };
+
     struct client_connection {
+        using state_machine_type =
+            Aegis_stateMachine::StateMachine<connection_state, connection_event>;
+
         int descriptor = -1;
         SSL* ssl_session = nullptr;
         bool tls_handshake_complete = false;
-        bool tls_write_interest = false;
+        bool write_interest = false;
+        bool tls_write_wants_read = false;
+        bool tls_read_wants_write = false;
+        bool request_in_flight = false;
+        bool close_after_response = false;
+        bool peer_closed = false;
+        std::string response_version = "HTTP/1.1";
         std::vector<std::uint8_t> request_bytes;
+        std::vector<std::uint8_t> response_bytes;
+        std::size_t response_offset = 0;
+        std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();
+        state_machine_type state_machine;
+
+        client_connection() : state_machine(connection_state::ReadingHeaders) {
+            auto reading_headers = connection_state::ReadingHeaders;
+            auto keep_alive = connection_state::KeepAlive;
+            auto closing = connection_state::Closing;
+            state_machine.Register_Rules_With_Events(
+                reading_headers, [] {}, connection_event::RequestParsed, keep_alive);
+            state_machine.Register_Rules_With_Events(
+                keep_alive, [] {}, connection_event::ResponseCompleted, reading_headers);
+            state_machine.Register_Rules_With_Events(
+                closing, [] {}, connection_event::CloseRequested, closing);
+        }
 
         ~client_connection() {
             if (ssl_session != nullptr) {
@@ -130,6 +171,8 @@ private:
 
     static constexpr std::size_t maximum_request_size_ = 16 * 1024 * 1024;
     static constexpr std::size_t maximum_events_ = 64;
+    static constexpr uintptr_t response_ready_event_id_ = 1;
+    static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
 
     int requested_port_ = 0;
     int bound_port_ = 0;
@@ -144,6 +187,13 @@ private:
     std::atomic<bool> stop_requested_ = false;
     std::array<struct kevent, maximum_events_> events_{};
     std::unordered_map<int, std::shared_ptr<client_connection>> clients_;
+    ApplicationHandler application_handler_;
+    struct response_completion {
+        std::shared_ptr<client_connection> connection;
+        httpresponse response;
+    };
+    std::mutex completion_mutex_;
+    std::deque<response_completion> response_completions_;
 
     // Both client-request and parsed-request work shares the same three slots.
     Aegis_ThreadPool::thread_pool request_task_pool_{3};
@@ -280,7 +330,7 @@ private:
     std::expected<void, std::string> set_client_write_interest(
         const std::shared_ptr<client_connection>& connection,
         bool enabled) {
-        if (connection->tls_write_interest == enabled) return {};
+        if (connection->write_interest == enabled) return {};
 
         struct kevent change{};
         if (enabled) {
@@ -291,12 +341,12 @@ private:
         }
         if (kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr) == -1) {
             if (!enabled && errno == ENOENT) {
-                connection->tls_write_interest = false;
+                connection->write_interest = false;
                 return {};
             }
             return std::unexpected<std::string>(last_socket_error("kevent update write interest"));
         }
-        connection->tls_write_interest = enabled;
+        connection->write_interest = enabled;
         return {};
     }
 
@@ -309,98 +359,61 @@ private:
         (void)kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr);
     }
 
-    static std::expected<void, std::string> wait_for_socket_event(int descriptor, short events) {
-        struct pollfd poll_descriptor{descriptor, events, 0};
-        while (true) {
-            const int result = poll(&poll_descriptor, 1, -1);
-            if (result > 0) return {};
-            if (result == -1 && errno == EINTR) continue;
-            return std::unexpected<std::string>(last_socket_error("poll socket"));
-        }
-    }
-
-    static std::expected<void, std::string> write_all(
-        const std::shared_ptr<client_connection>& connection,
-        const std::vector<std::uint8_t>& bytes) {
-        std::size_t offset = 0;
-        while (offset < bytes.size()) {
-            if (connection->ssl_session != nullptr) {
-                std::size_t bytes_written = 0;
-                ERR_clear_error();
-                const int result = SSL_write_ex(
-                    connection->ssl_session,
-                    bytes.data() + offset,
-                    bytes.size() - offset,
-                    &bytes_written);
-                if (result == 1 && bytes_written > 0) {
-                    offset += bytes_written;
-                    continue;
-                }
-
-                const int ssl_error = SSL_get_error(connection->ssl_session, result);
-                if (ssl_error == SSL_ERROR_WANT_READ) {
-                    if (auto ready = wait_for_socket_event(connection->descriptor, POLLIN); !ready) return ready;
-                    continue;
-                }
-                if (ssl_error == SSL_ERROR_WANT_WRITE) {
-                    if (auto ready = wait_for_socket_event(connection->descriptor, POLLOUT); !ready) return ready;
-                    continue;
-                }
-                if (ssl_error == SSL_ERROR_SYSCALL && errno == EINTR) continue;
-                return std::unexpected<std::string>(last_openssl_error("TLS write response"));
-            }
-
-            const ssize_t written = send(
-                connection->descriptor, bytes.data() + offset, bytes.size() - offset, 0);
-            if (written > 0) {
-                offset += static_cast<std::size_t>(written);
-                continue;
-            }
-            if (written == -1 && errno == EINTR) continue;
-            if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                if (auto ready = wait_for_socket_event(connection->descriptor, POLLOUT); !ready) return ready;
-                continue;
-            }
-            return std::unexpected<std::string>(last_socket_error("send response"));
+    std::expected<void, std::string> register_response_ready_event() {
+        struct kevent change{};
+        EV_SET(&change, response_ready_event_id_, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+        if (kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr) == -1) {
+            return std::unexpected<std::string>(last_socket_error("kevent register response event"));
         }
         return {};
     }
 
-    static std::expected<void, std::string> send_http_response(
+    void trigger_response_ready_event() noexcept {
+        if (kqueue_descriptor_ < 0) return;
+        struct kevent trigger{};
+        EV_SET(&trigger, response_ready_event_id_, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
+        (void)kevent(kqueue_descriptor_, &trigger, 1, nullptr, 0, nullptr);
+    }
+
+    void enqueue_response_completion(
         const std::shared_ptr<client_connection>& connection,
-        int status_code,
-        std::string reason,
-        std::string body) {
-        httpSerializer serializer;
-        httpresponse response{
-            .statusCode = status_code,
-            .statusReason = std::move(reason),
-            .headers = {{"Connection", "close"}},
-            .body = std::move(body)
-        };
-        if (auto serialized = serializer.Serialize(response); !serialized) {
-            return std::unexpected<std::string>(serialized.error());
+        httpresponse response) {
+        {
+            std::lock_guard lock(completion_mutex_);
+            response_completions_.push_back({connection, std::move(response)});
         }
-        return write_all(connection, serializer.ReturnSerializedResult());
+        trigger_response_ready_event();
     }
 
-    static std::string request_body_as_string(const Data& body) {
-        std::string result;
-        result.reserve(body.size());
-        for (const std::uint8_t byte : body) result.push_back(static_cast<char>(byte));
-        return result;
+    static bool has_connection_token(const HTTPRequest& request, std::string_view token) {
+        const auto connection_header = request.headers.find("connection");
+        if (connection_header == request.headers.end()) return false;
+
+        for (const std::string_view value : string_utils::split(connection_header->second, ',')) {
+            if (string_utils::to_lower(string_utils::trim_ows(value)) == token) return true;
+        }
+        return false;
     }
 
-    std::expected<std::shared_ptr<AegisHttpRequestStorage>, std::string>
-    create_aegis_request_storage(const std::vector<std::uint8_t>& request_data) const {
-        try {
-            auto request_storage = std::make_shared<AegisHttpRequestStorage>();
-            auto store_result = request_storage->store(request_data);
-            if (!store_result) return std::unexpected<std::string>(store_result.error());
-            return request_storage;
-        } catch (const std::exception& error) {
-            return std::unexpected<std::string>(error.what());
-        }
+    static bool request_allows_keep_alive(const HTTPRequest& request) {
+        if (has_connection_token(request, "close")) return false;
+        if (request.version == "HTTP/1.1") return true;
+        return has_connection_token(request, "keep-alive");
+    }
+
+    bool transition_to_keep_alive(const std::shared_ptr<client_connection>& connection) {
+        auto state = connection_state::ReadingHeaders;
+        return connection->state_machine.Transition(state).has_value();
+    }
+
+    bool transition_to_reading_headers(const std::shared_ptr<client_connection>& connection) {
+        auto state = connection_state::KeepAlive;
+        return connection->state_machine.Transition(state).has_value();
+    }
+
+    void mark_connection_closing(const std::shared_ptr<client_connection>& connection) {
+        auto state = connection_state::Closing;
+        (void)connection->state_machine.Store_State(state);
     }
 
     void accept_ready_clients(int listener_descriptor, bool use_tls) {
@@ -488,81 +501,124 @@ private:
         return handshake_state::failed;
     }
 
-    void dispatch_complete_request(
-        const std::shared_ptr<client_connection>& connection,
-        std::vector<std::uint8_t> raw_request) {
-        const int descriptor = connection->descriptor;
+    void close_client(int descriptor) noexcept {
         remove_read_event(descriptor);
-        clients_.erase(descriptor);
+        const auto client = clients_.find(descriptor);
+        if (client != clients_.end()) {
+            mark_connection_closing(client->second);
+            clients_.erase(client);
+        }
+    }
+
+    void enqueue_immediate_response(
+        const std::shared_ptr<client_connection>& connection,
+        httpresponse response,
+        bool close_after_response) {
+        if (!transition_to_keep_alive(connection)) {
+            close_client(connection->descriptor);
+            return;
+        }
+        connection->request_in_flight = true;
+        connection->close_after_response = close_after_response;
+        enqueue_response_completion(connection, std::move(response));
+    }
+
+    void dispatch_request(
+        const std::shared_ptr<client_connection>& connection,
+        HTTPRequest request) {
+        if (!transition_to_keep_alive(connection)) {
+            close_client(connection->descriptor);
+            return;
+        }
+
+        connection->request_in_flight = true;
+        connection->close_after_response =
+            !request_allows_keep_alive(request) || (connection->peer_closed && connection->request_bytes.empty());
+        connection->response_version = request.version;
 
         auto submission = request_task_pool_.Insert_Into_thread_pool(
-            [this, connection, raw_request = std::move(raw_request)]() mutable {
-                auto request_storage = create_aegis_request_storage(raw_request);
-                if (!request_storage) {
-                    (void)send_http_response(connection, 500, "Internal Server Error", "Request storage failed");
-                    return;
-                }
-
-                auto restored_request = (*request_storage)->retrieve();
-                if (!restored_request) {
-                    (void)send_http_response(connection, 500, "Internal Server Error", "Request storage failed");
-                    return;
-                }
-
-                HTTPParser parser(std::move(*restored_request));
-                auto parsed_request = parser.parse();
-                if (!parsed_request) {
-                    httpSerializer serializer;
-                    const auto [status_code, reason] = serializer.findTextWithCode(parsed_request.error());
-                    (void)send_http_response(connection, status_code, reason, reason);
-                    return;
-                }
-
-                auto parsed_submission = request_task_pool_.Insert_Into_thread_pool(
-                    [connection, request = std::move(*parsed_request)]() mutable {
-                        AegisHttpRequestStorage body_storage;
-                        if (auto stored = body_storage.store(request.body); !stored) {
-                            (void)send_http_response(connection, 500, "Internal Server Error", "Request storage failed");
-                            return;
+            [this, connection, request = std::move(request)]() mutable {
+                httpresponse response;
+                try {
+                    AegisHttpRequestStorage request_body_storage;
+                    auto stored_body = request_body_storage.store(request.body);
+                    if (!stored_body) {
+                        response = httpresponse{
+                            .statusCode = 500,
+                            .statusReason = "Internal Server Error",
+                            .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                            .body = "Request storage failed"
+                        };
+                    } else {
+                        auto restored_body = request_body_storage.retrieve();
+                        if (!restored_body) {
+                            response = httpresponse{
+                                .statusCode = 500,
+                                .statusReason = "Internal Server Error",
+                                .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                                .body = "Request storage failed"
+                            };
+                        } else {
+                            request.body = std::move(*restored_body);
+                            response = application_handler_.handle(request);
                         }
-
-                        auto echoed_body = body_storage.retrieve();
-                        if (!echoed_body) {
-                            (void)send_http_response(connection, 500, "Internal Server Error", "Request storage failed");
-                            return;
-                        }
-
-                        (void)send_http_response(
-                            connection, 200, "OK", request_body_as_string(*echoed_body));
-                    });
-
-                if (!parsed_submission) {
-                    (void)send_http_response(connection, 503, "Service Unavailable", "Server is shutting down");
-                    return;
+                    }
+                } catch (...) {
+                    response = httpresponse{
+                        .statusCode = 500,
+                        .statusReason = "Internal Server Error",
+                        .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                        .body = "Application handler failed"
+                    };
                 }
+
+                enqueue_response_completion(connection, std::move(response));
             });
 
         if (!submission) {
+            connection->close_after_response = true;
+            enqueue_response_completion(connection, httpresponse{
+                .statusCode = 503,
+                .statusReason = "Service Unavailable",
+                .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                .body = "Server is shutting down"
+            });
             return;
         }
         client_request_tasks_.push_back(*submission);
     }
 
-    void close_client(int descriptor) noexcept {
-        remove_read_event(descriptor);
-        clients_.erase(descriptor);
-    }
-
-    bool check_request_completeness(
+    void process_buffered_request(
         const std::shared_ptr<client_connection>& connection,
         bool peer_closed) {
-        HTTPParser parser(connection->request_bytes);
-        auto parse_result = parser.parse();
-        if (!parse_result && parse_result.error() == HTTPParserError::UnexpectedEOF && !peer_closed) {
-            return false;
+        if (connection->request_in_flight || !connection->response_bytes.empty()) return;
+        if (connection->request_bytes.empty()) {
+            if (peer_closed) close_client(connection->descriptor);
+            return;
         }
-        dispatch_complete_request(connection, std::move(connection->request_bytes));
-        return true;
+
+        HTTPParser parser(connection->request_bytes);
+        auto parsed_request = parser.parse();
+        if (!parsed_request) {
+            if (parsed_request.error() == HTTPParserError::UnexpectedEOF && !peer_closed) return;
+
+            httpSerializer serializer;
+            const auto [status_code, reason] = serializer.findTextWithCode(parsed_request.error());
+            enqueue_immediate_response(connection,
+                httpresponse{
+                    .statusCode = status_code,
+                    .statusReason = reason,
+                    .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                    .body = reason
+                }, true);
+            return;
+        }
+
+        const std::size_t consumed_bytes = parser.bytesConsumed();
+        connection->request_bytes.erase(
+            connection->request_bytes.begin(),
+            connection->request_bytes.begin() + static_cast<std::ptrdiff_t>(consumed_bytes));
+        dispatch_request(connection, std::move(*parsed_request));
     }
 
     void handle_plain_client_read(const std::shared_ptr<client_connection>& connection, bool peer_closed) {
@@ -573,12 +629,19 @@ private:
             if (bytes_read > 0) {
                 const std::size_t incoming_size = static_cast<std::size_t>(bytes_read);
                 if (incoming_size > maximum_request_size_ - connection->request_bytes.size()) {
-                    close_client(connection->descriptor);
+                    enqueue_immediate_response(connection,
+                        httpresponse{
+                            .statusCode = 413,
+                            .statusReason = "Payload Too Large",
+                            .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                            .body = "Payload Too Large"
+                        }, true);
                     return;
                 }
                 connection->request_bytes.insert(
                     connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
-                if (check_request_completeness(connection, false)) return;
+                connection->last_activity = std::chrono::steady_clock::now();
+                if (!connection->request_in_flight) process_buffered_request(connection, false);
                 continue;
             }
             if (bytes_read == 0) {
@@ -591,8 +654,13 @@ private:
             return;
         }
 
-        if (!connection->request_bytes.empty() || peer_closed) {
-            (void)check_request_completeness(connection, peer_closed);
+        if (peer_closed) {
+            connection->peer_closed = true;
+            if (connection->request_in_flight) {
+                if (connection->request_bytes.empty()) connection->close_after_response = true;
+            } else {
+                process_buffered_request(connection, true);
+            }
         }
     }
 
@@ -605,22 +673,32 @@ private:
                 connection->ssl_session, read_buffer.data(), read_buffer.size(), &bytes_read);
             if (result == 1 && bytes_read > 0) {
                 if (bytes_read > maximum_request_size_ - connection->request_bytes.size()) {
-                    close_client(connection->descriptor);
+                    enqueue_immediate_response(connection,
+                        httpresponse{
+                            .statusCode = 413,
+                            .statusReason = "Payload Too Large",
+                            .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                            .body = "Payload Too Large"
+                        }, true);
                     return;
                 }
                 connection->request_bytes.insert(
                     connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
-                if (check_request_completeness(connection, false)) return;
+                connection->last_activity = std::chrono::steady_clock::now();
+                if (!connection->request_in_flight) process_buffered_request(connection, false);
                 if (SSL_pending(connection->ssl_session) > 0) continue;
                 continue;
             }
 
             const int ssl_error = SSL_get_error(connection->ssl_session, result);
             if (ssl_error == SSL_ERROR_WANT_READ) {
+                connection->tls_read_wants_write = false;
+                connection->tls_write_wants_read = false;
                 (void)set_client_write_interest(connection, false);
                 break;
             }
             if (ssl_error == SSL_ERROR_WANT_WRITE) {
+                connection->tls_read_wants_write = true;
                 if (!set_client_write_interest(connection, true)) close_client(connection->descriptor);
                 return;
             }
@@ -634,8 +712,91 @@ private:
         }
 
         if (peer_closed) {
-            (void)check_request_completeness(connection, true);
+            connection->peer_closed = true;
+            if (connection->request_in_flight) {
+                if (connection->request_bytes.empty()) connection->close_after_response = true;
+            } else {
+                process_buffered_request(connection, true);
+            }
         }
+    }
+
+    void finish_response_write(const std::shared_ptr<client_connection>& connection) {
+        connection->response_bytes.clear();
+        connection->response_offset = 0;
+        connection->tls_write_wants_read = false;
+        (void)set_client_write_interest(connection, false);
+        connection->last_activity = std::chrono::steady_clock::now();
+
+        if (connection->close_after_response ||
+            (connection->peer_closed && connection->request_bytes.empty())) {
+            mark_connection_closing(connection);
+            close_client(connection->descriptor);
+            return;
+        }
+
+        if (!transition_to_reading_headers(connection)) {
+            close_client(connection->descriptor);
+            return;
+        }
+        connection->request_in_flight = false;
+        connection->close_after_response = false;
+        process_buffered_request(connection, connection->peer_closed);
+    }
+
+    void handle_client_write(const std::shared_ptr<client_connection>& connection) {
+        while (connection->response_offset < connection->response_bytes.size()) {
+            if (connection->ssl_session != nullptr) {
+                std::size_t bytes_written = 0;
+                ERR_clear_error();
+                const int result = SSL_write_ex(
+                    connection->ssl_session,
+                    connection->response_bytes.data() + connection->response_offset,
+                    connection->response_bytes.size() - connection->response_offset,
+                    &bytes_written);
+                if (result == 1 && bytes_written > 0) {
+                    connection->response_offset += bytes_written;
+                    connection->tls_write_wants_read = false;
+                    connection->last_activity = std::chrono::steady_clock::now();
+                    continue;
+                }
+
+                const int ssl_error = SSL_get_error(connection->ssl_session, result);
+                if (ssl_error == SSL_ERROR_WANT_READ) {
+                    connection->tls_write_wants_read = true;
+                    (void)set_client_write_interest(connection, false);
+                    return;
+                }
+                if (ssl_error == SSL_ERROR_WANT_WRITE) {
+                    connection->tls_write_wants_read = false;
+                    if (!set_client_write_interest(connection, true)) close_client(connection->descriptor);
+                    return;
+                }
+                if (ssl_error == SSL_ERROR_SYSCALL && errno == EINTR) continue;
+                close_client(connection->descriptor);
+                return;
+            }
+
+            const ssize_t written = send(
+                connection->descriptor,
+                connection->response_bytes.data() + connection->response_offset,
+                connection->response_bytes.size() - connection->response_offset,
+                0);
+            if (written > 0) {
+                connection->response_offset += static_cast<std::size_t>(written);
+                connection->last_activity = std::chrono::steady_clock::now();
+                continue;
+            }
+            if (written == -1 && errno == EINTR) continue;
+            if (written == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (!set_client_write_interest(connection, true)) close_client(connection->descriptor);
+                return;
+            }
+            close_client(connection->descriptor);
+            return;
+        }
+
+        finish_response_write(connection);
     }
 
     void handle_client_event(int descriptor, short filter, bool peer_closed) {
@@ -644,8 +805,8 @@ private:
         const std::shared_ptr<client_connection> connection = client->second;
 
         if (connection->ssl_session != nullptr && !connection->tls_handshake_complete) {
-            if ((connection->tls_write_interest && filter != EVFILT_WRITE) ||
-                (!connection->tls_write_interest && filter != EVFILT_READ)) {
+            if ((connection->write_interest && filter != EVFILT_WRITE) ||
+                (!connection->write_interest && filter != EVFILT_READ)) {
                 return;
             }
             const handshake_state state = advance_tls_handshake(connection);
@@ -656,19 +817,64 @@ private:
             if (state == handshake_state::waiting) return;
         }
 
-        if (connection->ssl_session == nullptr) {
-            if (filter == EVFILT_READ) handle_plain_client_read(connection, peer_closed);
+        if (!connection->response_bytes.empty()) {
+            if (connection->ssl_session == nullptr) {
+                if (filter == EVFILT_WRITE) handle_client_write(connection);
+            } else if ((connection->tls_write_wants_read && filter == EVFILT_READ) ||
+                       (connection->write_interest && filter == EVFILT_WRITE)) {
+                handle_client_write(connection);
+            }
             return;
         }
 
-        if (connection->tls_write_interest && filter != EVFILT_WRITE &&
-            SSL_pending(connection->ssl_session) == 0) {
-            return;
-        }
-        if (filter == EVFILT_READ || SSL_pending(connection->ssl_session) > 0 ||
-            (filter == EVFILT_WRITE && connection->tls_write_interest)) {
+        if (connection->ssl_session == nullptr) {
+            if (filter == EVFILT_READ) handle_plain_client_read(connection, peer_closed);
+        } else if ((filter == EVFILT_READ && !connection->tls_read_wants_write) ||
+                   (filter == EVFILT_WRITE && connection->tls_read_wants_write) ||
+                   SSL_pending(connection->ssl_session) > 0) {
             handle_tls_client_read(connection, peer_closed);
         }
+    }
+
+    void drain_response_completions() {
+        std::deque<response_completion> completions;
+        {
+            std::lock_guard lock(completion_mutex_);
+            completions.swap(response_completions_);
+        }
+
+        for (auto& completion : completions) {
+            const int descriptor = completion.connection->descriptor;
+            const auto client = clients_.find(descriptor);
+            if (client == clients_.end() || client->second != completion.connection) continue;
+
+            httpresponse response = std::move(completion.response);
+            response.httpVersion = completion.connection->response_version;
+            response.headers.insert_or_assign(
+                "Connection", completion.connection->close_after_response ? "close" : "keep-alive");
+            httpSerializer serializer;
+            if (auto serialized = serializer.Serialize(response); !serialized) {
+                close_client(descriptor);
+                continue;
+            }
+            completion.connection->response_bytes = serializer.ReturnSerializedResult();
+            completion.connection->response_offset = 0;
+            if (!set_client_write_interest(completion.connection, true)) {
+                close_client(descriptor);
+            }
+        }
+    }
+
+    void expire_idle_clients() {
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<int> expired_clients;
+        for (const auto& [descriptor, connection] : clients_) {
+            if (!connection->request_in_flight && connection->response_bytes.empty() &&
+                now - connection->last_activity >= keep_alive_idle_timeout_) {
+                expired_clients.push_back(descriptor);
+            }
+        }
+        for (const int descriptor : expired_clients) close_client(descriptor);
     }
 
     void reap_finished_client_tasks(bool wait_for_all) {
@@ -690,11 +896,13 @@ private:
     }
 
     void close_unclaimed_clients() noexcept {
+        std::vector<int> descriptors;
+        descriptors.reserve(clients_.size());
         for (const auto& [descriptor, connection] : clients_) {
             (void)connection;
-            remove_read_event(descriptor);
+            descriptors.push_back(descriptor);
         }
-        clients_.clear();
+        for (const int descriptor : descriptors) close_client(descriptor);
     }
 
 public:
@@ -810,6 +1018,22 @@ public:
             }
         }
 
+        if (auto registration = register_response_ready_event(); !registration) {
+            close(kqueue_descriptor_);
+            close(listener_socket_);
+            kqueue_descriptor_ = -1;
+            listener_socket_ = -1;
+            if (tls_listener_socket_ >= 0) {
+                close(tls_listener_socket_);
+                tls_listener_socket_ = -1;
+            }
+            if (tls_context_ != nullptr) {
+                SSL_CTX_free(tls_context_);
+                tls_context_ = nullptr;
+            }
+            return std::unexpected<std::string>(registration.error());
+        }
+
         started_ = true;
         stop_requested_.store(false);
         return {};
@@ -834,6 +1058,11 @@ public:
                 const struct kevent& event = events_[static_cast<std::size_t>(event_index)];
                 const int descriptor = static_cast<int>(event.ident);
 
+                if (event.filter == EVFILT_USER && event.ident == response_ready_event_id_) {
+                    drain_response_completions();
+                    continue;
+                }
+
                 if ((event.flags & EV_ERROR) && event.data != 0) {
                     if (descriptor == listener_socket_ || descriptor == tls_listener_socket_) {
                         run_error = "kqueue listener event failed: " + std::to_string(event.data);
@@ -851,12 +1080,18 @@ public:
                     handle_client_event(descriptor, event.filter, (event.flags & EV_EOF) != 0);
                 }
             }
+            drain_response_completions();
+            expire_idle_clients();
             reap_finished_client_tasks(false);
         }
 
         close_unclaimed_clients();
         reap_finished_client_tasks(true);
         auto shutdown_result = request_task_pool_.shut_down();
+        {
+            std::lock_guard lock(completion_mutex_);
+            response_completions_.clear();
+        }
         run_finished_ = true;
 
         if (!run_error.empty()) return std::unexpected<std::string>(std::move(run_error));
@@ -874,6 +1109,12 @@ public:
 
     int https_port() const noexcept {
         return bound_tls_port_;
+    }
+
+    std::expected<void, std::string> File_Link(
+        std::string route,
+        std::filesystem::path file) {
+        return application_handler_.File_Link(std::move(route), std::move(file));
     }
 
     template<typename Task, typename... Args>

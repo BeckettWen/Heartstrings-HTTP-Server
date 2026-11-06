@@ -23,12 +23,14 @@
 
 /* Begin PBXFileReference section */
 		2EB11D1A30824478000CA908 /* non_blocking_native.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = non_blocking_native.h; sourceTree = "<group>"; };
+		A18C10001000000000000004 /* ApplicationHandler.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ApplicationHandler.hpp; sourceTree = "<group>"; };
 		2EC945F3307C884A00C0D7A3 /* API_httpparser.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpparser.md; sourceTree = "<group>"; };
 		2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_httpserializer.md; sourceTree = "<group>"; };
 		2EC945F5307C884A00C0D7A3 /* HttpParser.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = HttpParser.hpp; sourceTree = "<group>"; };
 		2EC945F6307C884A00C0D7A3 /* HttpSerializer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HttpSerializer.h; sourceTree = "<group>"; };
 		A18C10001000000000000002 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		A18C10001000000000000003 /* API_tls.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_tls.md; sourceTree = "<group>"; };
+		A18C10001000000000000005 /* API_applicationhandler.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_applicationhandler.md; sourceTree = "<group>"; };
 		2EC945FA307C884A00C0D7A3 /* Aegis.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Aegis.hpp; sourceTree = "<group>"; };
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
@@ -52,6 +54,7 @@
 			children = (
 				A18C10001000000000000002 /* README.md */,
 				A18C10001000000000000003 /* API_tls.md */,
+				A18C10001000000000000005 /* API_applicationhandler.md */,
 				2EC945F3307C884A00C0D7A3 /* API_httpparser.md */,
 				2EC945F4307C884A00C0D7A3 /* API_httpserializer.md */,
 				A18C10001000000000000001 /* ProjectVersionInfo.h */,
@@ -84,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				2EB11D1A30824478000CA908 /* non_blocking_native.h */,
+				A18C10001000000000000004 /* ApplicationHandler.hpp */,
 			);
 			path = NetworkingCore;
 			sourceTree = "<group>";

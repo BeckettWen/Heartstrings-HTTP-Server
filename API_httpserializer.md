@@ -12,10 +12,12 @@ struct httpresponse {
     std::string statusReason = "OK";
     std::unordered_map<std::string, std::string> headers;
     std::string body;
+    bool suppressBody = false;
+    std::string httpVersion = "HTTP/1.1";
 };
 ```
 
-The response body is a `std::string` and may contain binary bytes. `statusReason` can be left empty; the serializer uses its built-in reason phrase when one is known.
+The response body is a `std::string` and may contain binary bytes. `statusReason` can be left empty; the serializer uses its built-in reason phrase when one is known. `suppressBody` supports `HEAD` responses while retaining the representation length. `httpVersion` defaults to `HTTP/1.1` and can be set to the parsed request version.
 
 ## `httpSerializer`
 
@@ -39,13 +41,13 @@ This legacy public member is not read or updated by the current serializer metho
 std::expected<void, std::string> Serialize(const httpresponse& response);
 ```
 
-Serializes an HTTP/1.1 response into the serializer's byte buffer. Each successful call replaces the previous serialized result. The serializer:
+Serializes a response into the serializer's byte buffer. Each successful call replaces the previous serialized result. The serializer:
 
-- writes the status line;
+- writes the status line using `httpVersion` (or `HTTP/1.1` if it is empty);
 - emits headers in deterministic, case-sensitive lexicographic name order;
 - replaces any supplied `Content-Length` with the actual body byte count;
 - adds `Connection: close` unless a connection header was supplied; and
-- appends the body bytes.
+- appends the body bytes unless `suppressBody` is true. `Content-Length` remains the unsuppressed representation length.
 
 Example:
 
@@ -88,7 +90,7 @@ If the parser overload fails before invoking the response overload, it leaves an
 std::expected<void, std::string> writeToBuffer(int& systemSocket);
 ```
 
-Writes the serialized bytes to a socket descriptor, retrying interrupted writes and continuing after partial writes. It returns an error if a write fails; it does not wait for a non-blocking socket to become writable. The server currently uses its own `send`/`poll` path for non-blocking client sockets.
+Writes the serialized bytes to a socket descriptor, retrying interrupted writes and continuing after partial writes. It returns an error if a write fails; it does not wait for a non-blocking socket to become writable. The server writes through its `kqueue` event loop, using OpenSSL for TLS connections.
 
 ### `findTextWithCode`
 
@@ -106,4 +108,4 @@ Maps parser errors to an HTTP status and reason phrase. Syntax/framing errors ma
 
 ## Current scope
 
-The server's default response is `200 OK` with the request body echoed and the connection closed. This serializer does not implement response streaming, chunked response encoding, header validation, or keep-alive policy management.
+The serializer does not implement response streaming, chunked response encoding, header validation, or keep-alive policy management. Those connection policies are handled by `socket_native`.

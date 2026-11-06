@@ -14,6 +14,7 @@ Http_Handling/
   HttpSerializer.h        HTTP response serializer
 NetworkingCore/
   non_blocking_native.h   macOS HTTP/HTTPS server and Aegis request storage
+  ApplicationHandler.hpp exact file routing and request handler
 Subsystems/
   Aegis.hpp               Aegis memory manager
   StateMachine.hpp        State-machine subsystem
@@ -25,6 +26,7 @@ tests/
 API_httpparser.md         HTTP parser API reference
 API_httpserializer.md     HTTP serializer API reference
 API_tls.md                TLS configuration and behavior
+API_applicationhandler.md File routing and handler API
 ProjectVersionInfo.h      X-18 project version information
 ```
 
@@ -34,18 +36,24 @@ ProjectVersionInfo.h      X-18 project version information
 
 1. `start()` creates, binds, and listens on the configured port. Port `0` asks the OS to choose a free port; retrieve it with `port()`.
 2. `run()` blocks in the event loop, accepts clients, and accumulates request bytes across partial reads.
-3. A complete request is staged through the normal Aegis allocator, parsed, and sent through the shared task pool.
-4. The server returns `200 OK` with the request body echoed, then closes that client connection.
-5. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
+3. Parsed requests are handled by the file router in the shared task pool. Register files with `File_Link(route, file)`.
+4. `GET` serves the linked file; `HEAD` serves its headers without a body. Unknown routes/files return `404`; unsupported methods return `405`.
+5. HTTP/1.1 connections remain alive unless a request says `Connection: close`. HTTP/1.0 connections close by default and remain open only with `Connection: keep-alive`. Pipelined requests are processed and answered in order.
+6. Idle keep-alive connections close after 30 seconds. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
+
+Each client connection owns its own StateMachine. It moves from `ReadingHeaders` to `KeepAlive` while a request is handled, returns to `ReadingHeaders` after a persistent response, and enters `Closing` when the connection should end.
 
 To enable HTTPS, call `enable_tls(TLSConfiguration)` before `start()`, supplying a PEM certificate chain and matching private key. Client-certificate verification is optional and can be required with a CA file. HTTP and HTTPS use separate ports; both listeners share the event loop and request pipeline.
 
-The shared task pool allows at most three active tasks; extra tasks wait in its FIFO queue. The parser limits request bodies to 16 MiB, headers to 64 KiB and 100 fields. The server currently handles one request per connection, closes connections after responding, and does not provide routing, keep-alive, or application-level pipelining.
+The shared task pool allows at most three active tasks; extra tasks wait in its FIFO queue. The parser limits request bodies to 16 MiB, headers to 64 KiB and 100 fields. Routes use exact URL-path matches; query strings do not affect the match. This is a simple static-file handler, not a dynamic application framework.
 
 This project currently has a test executable rather than a standalone server executable. To embed the server, include `NetworkingCore/non_blocking_native.h` and use:
 
 ```cpp
 socket_native server(8080);
+if (auto linked = server.File_Link("/", "www/index.html"); !linked) {
+    // Handle linked.error().
+}
 if (auto started = server.start(); !started) {
     // Handle started.error().
 }
@@ -72,10 +80,11 @@ xcodebuild \
 /tmp/X-18-DerivedData/Build/Products/Debug/test
 ```
 
-The tests cover serializer output, loopback HTTP and HTTPS request/response, optional and required client-certificate behavior, the three-task queue limit, and an Aegis storage/parser round trip.
+The tests cover parser validation and chunk framing, file routing, keep-alive and pipelined request ordering, loopback HTTP and HTTPS, optional and required client-certificate behavior, the three-task queue limit, and an Aegis storage/parser round trip.
 
 ## API references
 
 - [HTTP parser API](API_httpparser.md)
 - [HTTP serializer API](API_httpserializer.md)
 - [TLS API and configuration](API_tls.md)
+- [Application handler and routing API](API_applicationhandler.md)

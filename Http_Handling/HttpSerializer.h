@@ -24,6 +24,8 @@ struct httpresponse {
     std::string statusReason = "OK";
     std::unordered_map<std::string, std::string> headers;
     std::string body;
+    bool suppressBody = false;
+    std::string httpVersion = "HTTP/1.1";
 };
 
 inline std::unordered_map<HTTPParserError, int> statusCodeSet{
@@ -85,7 +87,8 @@ public:
             reason = known_status == statusCodeToText.end() ? "Unknown" : known_status->second;
         }
 
-        const std::string status_line = "HTTP/1.1 " + std::to_string(response.statusCode) +
+        const std::string version = response.httpVersion.empty() ? "HTTP/1.1" : response.httpVersion;
+        const std::string status_line = version + " " + std::to_string(response.statusCode) +
             " " + reason + universalCode;
         serializedHTTPRequest.insert(serializedHTTPRequest.end(), status_line.begin(), status_line.end());
 
@@ -105,7 +108,9 @@ public:
             serializedHTTPRequest.insert(serializedHTTPRequest.end(), header_line.begin(), header_line.end());
         }
         serializedHTTPRequest.insert(serializedHTTPRequest.end(), universalCode, universalCode + 2);
-        serializedHTTPRequest.insert(serializedHTTPRequest.end(), response.body.begin(), response.body.end());
+        if (!response.suppressBody) {
+            serializedHTTPRequest.insert(serializedHTTPRequest.end(), response.body.begin(), response.body.end());
+        }
         return {};
     }
 
@@ -128,7 +133,8 @@ public:
             .statusCode = 200,
             .statusReason = "OK",
             .headers = {{"Connection", "close"}},
-            .body = std::move(body)
+            .body = std::move(body),
+            .httpVersion = parsed_request->version
         };
         return Serialize(response);
     }

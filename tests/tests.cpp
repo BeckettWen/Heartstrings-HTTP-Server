@@ -43,6 +43,49 @@ struct TLSLoopbackOutcome {
     std::string error;
 };
 
+struct ParsedTestResponse {
+    std::string status_line;
+    std::string headers;
+    std::string body;
+};
+
+static const std::string& welcome_file_body() {
+    static const std::string body =
+        "<!doctype html>\n"
+        "<html><body>Heartstrings static route</body></html>\n";
+    return body;
+}
+
+static const std::string& second_file_body() {
+    static const std::string body = "Second pipelined response.\n";
+    return body;
+}
+
+static bool take_http_response(const std::string& bytes, std::size_t& offset, ParsedTestResponse& response) {
+    const std::size_t header_end = bytes.find("\r\n\r\n", offset);
+    if (header_end == std::string::npos) return false;
+    const std::size_t status_end = bytes.find("\r\n", offset);
+    if (status_end == std::string::npos || status_end > header_end) return false;
+
+    response.status_line = bytes.substr(offset, status_end - offset);
+    response.headers = bytes.substr(status_end + 2, header_end - status_end - 2);
+
+    const std::string length_header = "Content-Length: ";
+    const std::size_t length_start = response.headers.find(length_header);
+    if (length_start == std::string::npos) return false;
+    const std::size_t value_start = length_start + length_header.size();
+    const std::size_t value_end = response.headers.find("\r\n", value_start);
+    const std::size_t content_length = std::stoull(response.headers.substr(
+        value_start,
+        value_end == std::string::npos ? std::string::npos : value_end - value_start));
+
+    const std::size_t body_start = header_end + 4;
+    if (content_length > bytes.size() - body_start) return false;
+    response.body = bytes.substr(body_start, content_length);
+    offset = body_start + content_length;
+    return true;
+}
+
 static TLSLoopbackOutcome run_tls_loopback(
     bool require_client_certificate,
     bool send_client_certificate,
@@ -53,6 +96,13 @@ static TLSLoopbackOutcome run_tls_loopback(
     const std::string private_key_path = (fixture_directory / "localhost-key.pem").string();
 
     socket_native server(0);
+    auto tls_route = server.File_Link("/tls-echo", fixture_directory / "welcome.html");
+    auto plaintext_route = server.File_Link("/plain-echo", fixture_directory / "second.txt");
+    if (!tls_route || !plaintext_route) {
+        outcome.error = "Could not configure the test file routes";
+        return outcome;
+    }
+
     TLSConfiguration tls_configuration{
         .port = 0,
         .certificate_chain_file = certificate_path,
@@ -145,11 +195,10 @@ static TLSLoopbackOutcome run_tls_loopback(
     if (SSL_connect(client_ssl) == 1) {
         outcome.handshake_succeeded = SSL_get_verify_result(client_ssl) == X509_V_OK;
         const std::string request =
-            "POST /tls-echo HTTP/1.1\r\n"
+            "GET /tls-echo HTTP/1.1\r\n"
             "Host: localhost\r\n"
-            "Content-Length: 5\r\n"
-            "\r\n"
-            "Hello";
+            "Connection: close\r\n"
+            "\r\n";
 
         std::size_t bytes_sent = 0;
         while (outcome.handshake_succeeded && bytes_sent < request.size()) {
@@ -204,11 +253,10 @@ static TLSLoopbackOutcome run_tls_loopback(
             outcome.error = std::strerror(errno);
         } else {
             const std::string plaintext_request =
-                "POST /plain-echo HTTP/1.1\r\n"
+                "GET /plain-echo HTTP/1.1\r\n"
                 "Host: localhost\r\n"
-                "Content-Length: 5\r\n"
-                "\r\n"
-                "Plain";
+                "Connection: close\r\n"
+                "\r\n";
             std::size_t bytes_sent = 0;
             while (bytes_sent < plaintext_request.size()) {
                 const ssize_t written = send(
@@ -443,6 +491,262 @@ TEST(http_parser_tests, enforces_host_version_line_ending_and_body_limits){
     EXPECT_EQ(header_count.error(), HTTPParserError::HeadersTooLarge);
 }
 
+TEST(application_handler_tests, file_link_routes_get_and_head_requests){
+    const std::filesystem::path fixture =
+        std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";
+    const std::string expected_body =
+        "<!doctype html>\n"
+        "<html><body>Heartstrings static route</body></html>\n";
+
+    ApplicationHandler handler;
+    auto linked = handler.File_Link("/welcome", fixture);
+    ASSERT_TRUE(linked.has_value()) << linked.error();
+
+    HTTPRequest get_request{
+        .method = "GET",
+        .target = "/welcome?from=test",
+        .version = "HTTP/1.1"
+    };
+    const httpresponse get_response = handler.handle(get_request);
+    EXPECT_EQ(get_response.statusCode, 200);
+    EXPECT_EQ(get_response.body, expected_body);
+    EXPECT_EQ(get_response.headers.at("Content-Type"), "text/html; charset=utf-8");
+    EXPECT_FALSE(get_response.suppressBody);
+
+    HTTPRequest head_request{
+        .method = "HEAD",
+        .target = "/welcome",
+        .version = "HTTP/1.1"
+    };
+    const httpresponse head_response = handler.handle(head_request);
+    EXPECT_EQ(head_response.statusCode, 200);
+    EXPECT_EQ(head_response.body.size(), expected_body.size());
+    EXPECT_TRUE(head_response.suppressBody);
+
+    HTTPRequest missing_request{
+        .method = "GET",
+        .target = "/missing",
+        .version = "HTTP/1.1"
+    };
+    EXPECT_EQ(handler.handle(missing_request).statusCode, 404);
+
+    HTTPRequest unsupported_method{
+        .method = "POST",
+        .target = "/welcome",
+        .version = "HTTP/1.1"
+    };
+    EXPECT_EQ(handler.handle(unsupported_method).statusCode, 405);
+}
+
+TEST(unittests, keep_alive_pipelining_routes_files_in_request_order){
+    const std::filesystem::path fixtures = std::filesystem::path(__FILE__).parent_path() / "fixtures";
+    const std::string first_body =
+        "<!doctype html>\n"
+        "<html><body>Heartstrings static route</body></html>\n";
+    const std::string second_body = "Second pipelined response.\n";
+
+    socket_native server(0);
+    ASSERT_TRUE(server.File_Link("/first", fixtures / "welcome.html").has_value());
+    ASSERT_TRUE(server.File_Link("/second", fixtures / "second.txt").has_value());
+    ASSERT_TRUE(server.start().has_value());
+
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+
+    const int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket == -1) {
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not create client socket";
+        return;
+    }
+
+    timeval receive_timeout{3, 0};
+    (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
+    sockaddr_in server_address{};
+    server_address.sin_family = AF_INET;
+    server_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    server_address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+
+    if (connect(client_socket, reinterpret_cast<sockaddr*>(&server_address), sizeof(server_address)) == -1) {
+        close(client_socket);
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not connect to the keep-alive test server";
+        return;
+    }
+
+    const std::string pipelined_requests =
+        "GET /first?cache=1 HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "\r\n"
+        "GET /second HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    std::size_t request_offset = 0;
+    bool send_failed = false;
+    while (request_offset < pipelined_requests.size()) {
+        const ssize_t written = send(
+            client_socket,
+            pipelined_requests.data() + request_offset,
+            pipelined_requests.size() - request_offset,
+            0);
+        if (written > 0) {
+            request_offset += static_cast<std::size_t>(written);
+        } else if (written == -1 && errno == EINTR) {
+            continue;
+        } else {
+            send_failed = true;
+            break;
+        }
+    }
+
+    std::string raw_responses;
+    std::array<char, 2048> response_buffer{};
+    bool receive_failed = false;
+    while (!send_failed) {
+        const ssize_t bytes_read = recv(client_socket, response_buffer.data(), response_buffer.size(), 0);
+        if (bytes_read > 0) {
+            raw_responses.append(response_buffer.data(), static_cast<std::size_t>(bytes_read));
+            continue;
+        }
+        if (bytes_read == 0) break;
+        if (errno == EINTR) continue;
+        receive_failed = true;
+        break;
+    }
+
+    close(client_socket);
+    server.stop();
+    server_thread.join();
+
+    ASSERT_FALSE(send_failed);
+    ASSERT_FALSE(receive_failed);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+
+    std::size_t response_offset = 0;
+    ParsedTestResponse first_response;
+    ASSERT_TRUE(take_http_response(raw_responses, response_offset, first_response));
+    EXPECT_EQ(first_response.status_line, "HTTP/1.1 200 OK");
+    EXPECT_NE(first_response.headers.find("Connection: keep-alive"), std::string::npos);
+    EXPECT_EQ(first_response.body, first_body);
+
+    ParsedTestResponse second_response;
+    ASSERT_TRUE(take_http_response(raw_responses, response_offset, second_response));
+    EXPECT_EQ(second_response.status_line, "HTTP/1.1 200 OK");
+    EXPECT_NE(second_response.headers.find("Connection: close"), std::string::npos);
+    EXPECT_EQ(second_response.body, second_body);
+    EXPECT_EQ(response_offset, raw_responses.size());
+}
+
+TEST(unittests, each_client_has_independent_connection_state){
+    const std::filesystem::path fixtures = std::filesystem::path(__FILE__).parent_path() / "fixtures";
+    socket_native server(0);
+    ASSERT_TRUE(server.File_Link("/first", fixtures / "welcome.html").has_value());
+    ASSERT_TRUE(server.File_Link("/second", fixtures / "second.txt").has_value());
+    ASSERT_TRUE(server.start().has_value());
+
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+
+    auto connect_client = [&]() {
+        const int descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        if (descriptor == -1) return -1;
+        timeval timeout{3, 0};
+        (void)setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+        if (connect(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+            close(descriptor);
+            return -1;
+        }
+        return descriptor;
+    };
+    auto send_all = [](int descriptor, std::string_view data) {
+        std::size_t offset = 0;
+        while (offset < data.size()) {
+            const ssize_t written = send(descriptor, data.data() + offset, data.size() - offset, 0);
+            if (written > 0) {
+                offset += static_cast<std::size_t>(written);
+            } else if (written == -1 && errno == EINTR) {
+                continue;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    auto receive_all = [](int descriptor, std::string& response) {
+        std::array<char, 1024> buffer{};
+        while (true) {
+            const ssize_t bytes_read = recv(descriptor, buffer.data(), buffer.size(), 0);
+            if (bytes_read > 0) {
+                response.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+            } else if (bytes_read == 0) {
+                return true;
+            } else if (errno != EINTR) {
+                return false;
+            }
+        }
+    };
+
+    const int first_client = connect_client();
+    const int second_client = connect_client();
+    bool first_sent = false;
+    bool second_sent = false;
+    bool first_received = false;
+    bool second_received = false;
+    std::string first_response;
+    std::string second_response;
+
+    if (first_client >= 0 && second_client >= 0) {
+        const std::string first_prefix =
+            "GET /first HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n";
+        const std::string second_request =
+            "GET /second HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        first_sent = send_all(first_client, first_prefix);
+        second_sent = send_all(second_client, second_request);
+        if (second_sent) second_received = receive_all(second_client, second_response);
+        if (first_sent) {
+            first_sent = send_all(first_client, "\r\n");
+            if (first_sent) first_received = receive_all(first_client, first_response);
+        }
+    }
+
+    if (first_client >= 0) close(first_client);
+    if (second_client >= 0) close(second_client);
+    server.stop();
+    server_thread.join();
+
+    ASSERT_GE(first_client, 0);
+    ASSERT_GE(second_client, 0);
+    ASSERT_TRUE(first_sent);
+    ASSERT_TRUE(second_sent);
+    ASSERT_TRUE(first_received);
+    ASSERT_TRUE(second_received);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+
+    std::size_t offset = 0;
+    ParsedTestResponse first_parsed;
+    ASSERT_TRUE(take_http_response(first_response, offset, first_parsed));
+    EXPECT_EQ(first_parsed.body, welcome_file_body());
+    EXPECT_EQ(offset, first_response.size());
+
+    offset = 0;
+    ParsedTestResponse second_parsed;
+    ASSERT_TRUE(take_http_response(second_response, offset, second_parsed));
+    EXPECT_EQ(second_parsed.body, second_file_body());
+    EXPECT_EQ(offset, second_response.size());
+}
+
 TEST(thread_pool_tests, queues_tasks_after_three_are_running){
     Aegis_ThreadPool::thread_pool pool;
     std::latch release_tasks(1);
@@ -523,6 +827,10 @@ TEST(aegis_http_integration, request_survives_aegis_storage_and_parses){
 
 TEST(unittests, networking_test){
     socket_native server(0);
+    const std::filesystem::path welcome_file =
+        std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";
+    auto file_link_result = server.File_Link("/echo", welcome_file);
+    ASSERT_TRUE(file_link_result.has_value()) << file_link_result.error();
     auto start_result = server.start();
     ASSERT_TRUE(start_result.has_value()) << start_result.error();
 
@@ -555,8 +863,9 @@ TEST(unittests, networking_test){
     }
 
     const std::string request_prefix =
-        "POST /echo HTTP/1.1\r\n"
+        "GET /echo HTTP/1.1\r\n"
         "Host: localhost\r\n"
+        "Connection: close\r\n"
         "Content-Length: 5\r\n"
         "\r\n"
         "He";
@@ -588,12 +897,13 @@ TEST(unittests, networking_test){
 
     ASSERT_FALSE(receive_failed) << "Client failed while sending or receiving HTTP data";
     ASSERT_TRUE(server_result.has_value()) << server_result.error();
-    EXPECT_EQ(response,
+    const std::string expected_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
-        "\r\n"
-        "Hello");
+        "Content-Length: " + std::to_string(welcome_file_body().size()) + "\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "\r\n" + welcome_file_body();
+    EXPECT_EQ(response, expected_response);
 }
 
 TEST(unittests, tls_networking_accepts_client_without_client_certificate){
@@ -606,18 +916,22 @@ TEST(unittests, tls_networking_accepts_client_without_client_certificate){
     ASSERT_TRUE(outcome.response_received);
     ASSERT_TRUE(outcome.plaintext_response_received);
     ASSERT_TRUE(outcome.server_run_succeeded);
-    EXPECT_EQ(outcome.response,
+    const std::string expected_tls_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
+        "Content-Length: " + std::to_string(welcome_file_body().size()) + "\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
         "\r\n"
-        "Hello");
-    EXPECT_EQ(outcome.plaintext_response,
+        + welcome_file_body();
+    EXPECT_EQ(outcome.response, expected_tls_response);
+    const std::string expected_plaintext_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
+        "Content-Length: " + std::to_string(second_file_body().size()) + "\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
         "\r\n"
-        "Plain");
+        + second_file_body();
+    EXPECT_EQ(outcome.plaintext_response, expected_plaintext_response);
 }
 
 TEST(unittests, tls_networking_allows_optional_client_certificate){
@@ -641,18 +955,22 @@ TEST(unittests, tls_networking_accepts_required_client_certificate){
     ASSERT_TRUE(outcome.response_received);
     ASSERT_TRUE(outcome.plaintext_response_received);
     ASSERT_TRUE(outcome.server_run_succeeded);
-    EXPECT_EQ(outcome.response,
+    const std::string expected_tls_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
+        "Content-Length: " + std::to_string(welcome_file_body().size()) + "\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n"
         "\r\n"
-        "Hello");
-    EXPECT_EQ(outcome.plaintext_response,
+        + welcome_file_body();
+    EXPECT_EQ(outcome.response, expected_tls_response);
+    const std::string expected_plaintext_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
+        "Content-Length: " + std::to_string(second_file_body().size()) + "\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
         "\r\n"
-        "Plain");
+        + second_file_body();
+    EXPECT_EQ(outcome.plaintext_response, expected_plaintext_response);
 }
 
 TEST(unittests, tls_networking_rejects_missing_required_client_certificate){
@@ -666,12 +984,14 @@ TEST(unittests, tls_networking_rejects_missing_required_client_certificate){
     EXPECT_FALSE(outcome.response_received);
     ASSERT_TRUE(outcome.plaintext_response_received);
     EXPECT_TRUE(outcome.server_run_succeeded);
-    EXPECT_EQ(outcome.plaintext_response,
+    const std::string expected_plaintext_response =
         "HTTP/1.1 200 OK\r\n"
         "Connection: close\r\n"
-        "Content-Length: 5\r\n"
+        "Content-Length: " + std::to_string(second_file_body().size()) + "\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
         "\r\n"
-        "Plain");
+        + second_file_body();
+    EXPECT_EQ(outcome.plaintext_response, expected_plaintext_response);
 }
 
 int main(int argc, char **argv) {
