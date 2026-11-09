@@ -29,6 +29,8 @@ namespace Heartstrings {
 
 `Server` exposes `File_Link(route, file)`, `enable_tls(configuration)`, `start()`, blocking `run()`, `stop()`, `port()`, and `https_port()`. `TLSConfiguration` accepts the certificate-chain path, private-key path, and optional client-certificate verification settings. Call `enable_tls()` before `start()`.
 
+The `Server(int port)` constructor uses a **30-second absolute request-read deadline**. To choose another positive duration, use `Server(int port, std::chrono::milliseconds request_read_timeout)`. The deadline starts when the first bytes of a request arrive and is not extended by trickled bytes. If an incomplete request exceeds it, the server returns `408 Request Timeout` and closes that connection. The separate 30-second keep-alive idle timeout is unchanged. The request deadline covers HTTP request reads after TLS handshake; it is not a TLS handshake or response-write timeout.
+
 ```cpp
 Heartstrings::Server server(8080);
 if (auto linked = server.File_Link("/", "www/index.html"); !linked) {

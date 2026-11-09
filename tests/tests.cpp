@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <condition_variable>
 #include <cstring>
+#include <string_view>
 #include <expected>
 #include <filesystem>
 #include <gtest/gtest.h>
@@ -89,13 +90,15 @@ static bool take_http_response(const std::string& bytes, std::size_t& offset, Pa
 static TLSLoopbackOutcome run_tls_loopback(
     bool require_client_certificate,
     bool send_client_certificate,
-    bool configure_client_ca = false) {
+    bool configure_client_ca = false,
+    std::chrono::milliseconds request_read_timeout = std::chrono::seconds(30),
+    bool send_incomplete_request = false) {
     TLSLoopbackOutcome outcome;
     const std::filesystem::path fixture_directory = std::filesystem::path(__FILE__).parent_path() / "fixtures";
     const std::string certificate_path = (fixture_directory / "localhost-cert.pem").string();
     const std::string private_key_path = (fixture_directory / "localhost-key.pem").string();
 
-    socket_native server(0);
+    socket_native server(0, request_read_timeout);
     auto tls_route = server.File_Link("/tls-echo", fixture_directory / "welcome.html");
     auto plaintext_route = server.File_Link("/plain-echo", fixture_directory / "second.txt");
     if (!tls_route || !plaintext_route) {
@@ -194,11 +197,12 @@ static TLSLoopbackOutcome run_tls_loopback(
 
     if (SSL_connect(client_ssl) == 1) {
         outcome.handshake_succeeded = SSL_get_verify_result(client_ssl) == X509_V_OK;
-        const std::string request =
-            "GET /tls-echo HTTP/1.1\r\n"
-            "Host: localhost\r\n"
-            "Connection: close\r\n"
-            "\r\n";
+        const std::string request = send_incomplete_request
+            ? "GET /tls-echo HTTP/1.1\r\nHost: localhost\r\nX-Partial:"
+            : "GET /tls-echo HTTP/1.1\r\n"
+              "Host: localhost\r\n"
+              "Connection: close\r\n"
+              "\r\n";
 
         std::size_t bytes_sent = 0;
         while (outcome.handshake_succeeded && bytes_sent < request.size()) {
@@ -489,6 +493,135 @@ TEST(http_parser_tests, enforces_host_version_line_ending_and_body_limits){
     auto header_count = header_count_parser.parse();
     ASSERT_FALSE(header_count.has_value());
     EXPECT_EQ(header_count.error(), HTTPParserError::HeadersTooLarge);
+}
+
+TEST(http_parser_tests, enforces_header_byte_and_chunked_body_limits){
+    const std::string oversized_headers =
+        "GET / HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "X-Extra: abcdefghijklmnop\r\n"
+        "\r\n";
+    HTTPParser header_size_parser(
+        Data(oversized_headers.begin(), oversized_headers.end()),
+        HTTPParser::default_maximum_body_size,
+        40);
+    auto header_size = header_size_parser.parse();
+    ASSERT_FALSE(header_size.has_value());
+    EXPECT_EQ(header_size.error(), HTTPParserError::HeadersTooLarge);
+
+    const std::string oversized_chunked_body =
+        "POST / HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "6\r\n"
+        "123456\r\n"
+        "0\r\n\r\n";
+    HTTPParser chunked_body_parser(
+        Data(oversized_chunked_body.begin(), oversized_chunked_body.end()),
+        5);
+    auto chunked_body = chunked_body_parser.parse();
+    ASSERT_FALSE(chunked_body.has_value());
+    EXPECT_EQ(chunked_body.error(), HTTPParserError::RequestTooLarge);
+}
+
+TEST(unittests, incomplete_http_request_has_absolute_read_deadline){
+    constexpr auto request_timeout = std::chrono::milliseconds(250);
+    socket_native server(0, request_timeout);
+    ASSERT_TRUE(server.start().has_value());
+
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+
+    const int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket == -1) {
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not create slow HTTP client socket";
+        return;
+    }
+    timeval receive_timeout{3, 0};
+    (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+    if (connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+        close(client_socket);
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not connect slow HTTP client";
+        return;
+    }
+
+    auto send_all = [client_socket](std::string_view bytes) {
+        std::size_t offset = 0;
+        while (offset < bytes.size()) {
+            const ssize_t written = send(
+                client_socket, bytes.data() + offset, bytes.size() - offset, 0);
+            if (written > 0) {
+                offset += static_cast<std::size_t>(written);
+            } else if (written == -1 && errno == EINTR) {
+                continue;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const auto request_started = std::chrono::steady_clock::now();
+    bool sent = send_all("GET / HTTP/1.1\r\nHost: localhost\r\nX-Partial:");
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    sent = sent && send_all("a");
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    sent = sent && send_all("b");
+
+    std::string response;
+    std::array<char, 1024> buffer{};
+    bool receive_failed = false;
+    while (sent) {
+        const ssize_t bytes_read = recv(client_socket, buffer.data(), buffer.size(), 0);
+        if (bytes_read > 0) {
+            response.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+        } else if (bytes_read == 0) {
+            break;
+        } else if (errno != EINTR) {
+            receive_failed = true;
+            break;
+        }
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - request_started;
+
+    close(client_socket);
+    server.stop();
+    server_thread.join();
+
+    ASSERT_TRUE(sent);
+    ASSERT_FALSE(receive_failed);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+    EXPECT_LT(elapsed, std::chrono::seconds(2));
+    EXPECT_NE(response.find("HTTP/1.1 408 Request Timeout"), std::string::npos) << response;
+    EXPECT_NE(response.find("Connection: close"), std::string::npos) << response;
+}
+
+TEST(unittests, incomplete_https_request_has_read_deadline){
+    const TLSLoopbackOutcome outcome = run_tls_loopback(
+        false,
+        false,
+        false,
+        std::chrono::milliseconds(250),
+        true);
+    ASSERT_TRUE(outcome.error.empty()) << outcome.error;
+    ASSERT_TRUE(outcome.server_started);
+    ASSERT_TRUE(outcome.handshake_succeeded);
+    ASSERT_TRUE(outcome.request_sent);
+    ASSERT_TRUE(outcome.response_received);
+    ASSERT_TRUE(outcome.plaintext_response_received);
+    ASSERT_TRUE(outcome.server_run_succeeded);
+    EXPECT_NE(outcome.response.find("HTTP/1.1 408 Request Timeout"), std::string::npos)
+        << outcome.response;
 }
 
 TEST(application_handler_tests, file_link_routes_get_and_head_requests){

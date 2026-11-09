@@ -44,7 +44,7 @@ ProjectVersionInfo.h      X-18 project version information
 3. Parsed requests are handled by the file router in the shared task pool. Register files with `File_Link(route, file)`.
 4. `GET` serves the linked file; `HEAD` serves its headers without a body. Unknown routes/files return `404`; unsupported methods return `405`.
 5. HTTP/1.1 connections remain alive unless a request says `Connection: close`. HTTP/1.0 connections close by default and remain open only with `Connection: keep-alive`. Pipelined requests are processed and answered in order.
-6. Idle keep-alive connections close after 30 seconds. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
+6. Idle keep-alive connections close after 30 seconds. Incomplete requests also have an absolute 30-second read deadline, not extended by trickled bytes; they receive `408 Request Timeout`. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
 
 Each client connection owns its own StateMachine. It moves from `ReadingHeaders` to `KeepAlive` while a request is handled, returns to `ReadingHeaders` after a persistent response, and enters `Closing` when the connection should end.
 
@@ -87,7 +87,7 @@ xcodebuild \
 /tmp/X-18-DerivedData/Build/Products/Debug/test
 ```
 
-The tests cover parser validation and chunk framing, file routing, keep-alive and pipelined request ordering, loopback HTTP and HTTPS, optional and required client-certificate behavior, the three-task queue limit, and an Aegis storage/parser round trip.
+The tests cover parser validation and chunk framing, file routing, keep-alive and pipelined request ordering, slow-request deadlines over HTTP and HTTPS, optional and required client-certificate behavior, the three-task queue limit, and an Aegis storage/parser round trip.
 
 ## API references
 

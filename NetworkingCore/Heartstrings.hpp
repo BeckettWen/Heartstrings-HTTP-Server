@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -23,7 +24,10 @@ private:
     std::unique_ptr<Implementation> implementation_;
 
 public:
+    // Incomplete requests have a 30-second absolute read deadline by default.
     explicit Server(int port);
+    // The request-read deadline must be positive; incoming bytes do not extend it.
+    Server(int port, std::chrono::milliseconds request_read_timeout);
     ~Server();
 
     Server(const Server&) = delete;

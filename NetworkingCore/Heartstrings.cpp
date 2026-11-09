@@ -8,12 +8,17 @@ namespace Heartstrings {
 
 class Server::Implementation {
 public:
-    explicit Implementation(int port) : server(port) {}
+    Implementation(int port, std::chrono::milliseconds request_read_timeout)
+        : server(port, request_read_timeout) {}
 
     socket_native server;
 };
 
-Server::Server(int port) : implementation_(std::make_unique<Implementation>(port)) {}
+Server::Server(int port)
+    : Server(port, std::chrono::seconds(30)) {}
+
+Server::Server(int port, std::chrono::milliseconds request_read_timeout)
+    : implementation_(std::make_unique<Implementation>(port, request_read_timeout)) {}
 
 Server::~Server() = default;
 Server::Server(Server&&) noexcept = default;

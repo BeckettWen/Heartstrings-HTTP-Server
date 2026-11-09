@@ -141,6 +141,7 @@ private:
         bool peer_closed = false;
         std::string response_version = "HTTP/1.1";
         std::vector<std::uint8_t> request_bytes;
+        std::optional<std::chrono::steady_clock::time_point> request_read_started;
         std::vector<std::uint8_t> response_bytes;
         std::size_t response_offset = 0;
         std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();
@@ -175,6 +176,7 @@ private:
     static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
 
     int requested_port_ = 0;
+    std::chrono::milliseconds request_read_timeout_ = std::chrono::seconds(30);
     int bound_port_ = 0;
     int listener_socket_ = -1;
     int bound_tls_port_ = 0;
@@ -593,6 +595,7 @@ private:
         bool peer_closed) {
         if (connection->request_in_flight || !connection->response_bytes.empty()) return;
         if (connection->request_bytes.empty()) {
+            connection->request_read_started.reset();
             if (peer_closed) close_client(connection->descriptor);
             return;
         }
@@ -601,6 +604,7 @@ private:
         auto parsed_request = parser.parse();
         if (!parsed_request) {
             if (parsed_request.error() == HTTPParserError::UnexpectedEOF && !peer_closed) return;
+            connection->request_read_started.reset();
 
             httpSerializer serializer;
             const auto [status_code, reason] = serializer.findTextWithCode(parsed_request.error());
@@ -615,6 +619,7 @@ private:
         }
 
         const std::size_t consumed_bytes = parser.bytesConsumed();
+        connection->request_read_started.reset();
         connection->request_bytes.erase(
             connection->request_bytes.begin(),
             connection->request_bytes.begin() + static_cast<std::ptrdiff_t>(consumed_bytes));
@@ -635,8 +640,12 @@ private:
                             .statusReason = "Payload Too Large",
                             .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
                             .body = "Payload Too Large"
-                        }, true);
+                    }, true);
                     return;
+                }
+                if (!connection->request_in_flight && connection->request_bytes.empty() &&
+                    !connection->request_read_started) {
+                    connection->request_read_started = std::chrono::steady_clock::now();
                 }
                 connection->request_bytes.insert(
                     connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
@@ -679,8 +688,12 @@ private:
                             .statusReason = "Payload Too Large",
                             .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
                             .body = "Payload Too Large"
-                        }, true);
+                    }, true);
                     return;
+                }
+                if (!connection->request_in_flight && connection->request_bytes.empty() &&
+                    !connection->request_read_started) {
+                    connection->request_read_started = std::chrono::steady_clock::now();
                 }
                 connection->request_bytes.insert(
                     connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
@@ -741,6 +754,9 @@ private:
         }
         connection->request_in_flight = false;
         connection->close_after_response = false;
+        connection->request_read_started = connection->request_bytes.empty()
+            ? std::nullopt
+            : std::optional(std::chrono::steady_clock::now());
         process_buffered_request(connection, connection->peer_closed);
     }
 
@@ -868,11 +884,26 @@ private:
     void expire_idle_clients() {
         const auto now = std::chrono::steady_clock::now();
         std::vector<int> expired_clients;
+        std::vector<std::shared_ptr<client_connection>> timed_out_requests;
         for (const auto& [descriptor, connection] : clients_) {
-            if (!connection->request_in_flight && connection->response_bytes.empty() &&
-                now - connection->last_activity >= keep_alive_idle_timeout_) {
-                expired_clients.push_back(descriptor);
+            if (!connection->request_in_flight && connection->response_bytes.empty()) {
+                if (connection->request_read_started &&
+                    now - *connection->request_read_started >= request_read_timeout_) {
+                    timed_out_requests.push_back(connection);
+                } else if (connection->request_bytes.empty() &&
+                           now - connection->last_activity >= keep_alive_idle_timeout_) {
+                    expired_clients.push_back(descriptor);
+                }
             }
+        }
+        for (const auto& connection : timed_out_requests) {
+            enqueue_immediate_response(connection,
+                httpresponse{
+                    .statusCode = 408,
+                    .statusReason = "Request Timeout",
+                    .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                    .body = "Request Timeout"
+                }, true);
         }
         for (const int descriptor : expired_clients) close_client(descriptor);
     }
@@ -906,7 +937,10 @@ private:
     }
 
 public:
-    explicit socket_native(int port) : requested_port_(port) {}
+    explicit socket_native(int port) : socket_native(port, std::chrono::seconds(30)) {}
+
+    socket_native(int port, std::chrono::milliseconds request_read_timeout)
+        : requested_port_(port), request_read_timeout_(request_read_timeout) {}
 
     socket_native(const socket_native&) = delete;
     socket_native& operator=(const socket_native&) = delete;
@@ -940,6 +974,9 @@ public:
 
     std::expected<void, std::string> start() {
         if (started_) return std::unexpected<std::string>("Server has already been started");
+        if (request_read_timeout_ <= std::chrono::milliseconds::zero()) {
+            return std::unexpected<std::string>("Request read timeout must be greater than zero");
+        }
         if (requested_port_ < 0 || requested_port_ > 65535) {
             return std::unexpected<std::string>("Port must be between 0 and 65535");
         }

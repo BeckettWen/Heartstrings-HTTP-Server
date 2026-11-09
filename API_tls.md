@@ -68,6 +68,7 @@ To require client certificates, set `require_client_certificate = true` and prov
 ## Current behavior and limitations
 
 - TLS handshakes and reads are non-blocking and coordinated with `kqueue`.
+- After the TLS handshake, incomplete HTTP requests use the server's absolute request-read deadline (30 seconds by default); incoming bytes do not extend it. This is not a TLS handshake or response-write timeout.
 - Each accepted TLS connection owns its OpenSSL `SSL` session. Once its HTTP request is complete, the session moves with the connection into request processing; the session is not used concurrently by the event loop and worker tasks.
 - TLS response writes handle partial writes and wait for the socket readiness requested by OpenSSL.
 - HTTP and HTTPS use separate ports; this implementation does not sniff and multiplex both protocols on one port.
