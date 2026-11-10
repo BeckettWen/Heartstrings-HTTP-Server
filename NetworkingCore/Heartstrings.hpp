@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -36,6 +37,8 @@ public:
     Server& operator=(Server&&) noexcept;
 
     std::expected<void, std::string> enable_tls(TLSConfiguration configuration);
+    // Configure a positive HTTP+HTTPS connection cap before start(); default is 128.
+    std::expected<void, std::string> set_maximum_connections(std::size_t maximum_connections);
     std::expected<void, std::string> File_Link(
         std::string route,
         std::filesystem::path file);

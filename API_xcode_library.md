@@ -27,7 +27,9 @@ namespace Heartstrings {
 }
 ```
 
-`Server` exposes `File_Link(route, file)`, `enable_tls(configuration)`, `start()`, blocking `run()`, `stop()`, `port()`, and `https_port()`. `TLSConfiguration` accepts the certificate-chain path, private-key path, and optional client-certificate verification settings. Call `enable_tls()` before `start()`.
+`Server` exposes `File_Link(route, file)`, `enable_tls(configuration)`, `set_maximum_connections(limit)`, `start()`, blocking `run()`, `stop()`, `port()`, and `https_port()`. `TLSConfiguration` accepts the certificate-chain path, private-key path, and optional client-certificate verification settings. Call `enable_tls()` and set connection limits before `start()`.
+
+The default is **128 tracked client connections total across HTTP and HTTPS**. Use `set_maximum_connections(positive_limit)` before `start()` to choose another limit. It returns an error for zero or if called after startup. When the limit is reached, newly accepted sockets are closed immediately without allocating per-client or TLS session state; clients may see a connection close rather than an HTTP error response.
 
 The `Server(int port)` constructor uses a **30-second absolute request-read deadline**. To choose another positive duration, use `Server(int port, std::chrono::milliseconds request_read_timeout)`. The deadline starts when the first bytes of a request arrive and is not extended by trickled bytes. If an incomplete request exceeds it, the server returns `408 Request Timeout` and closes that connection. The separate 30-second keep-alive idle timeout is unchanged. The request deadline covers HTTP request reads after TLS handshake; it is not a TLS handshake or response-write timeout.
 

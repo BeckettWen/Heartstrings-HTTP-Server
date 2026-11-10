@@ -171,12 +171,14 @@ private:
     enum class handshake_state { complete, waiting, failed };
 
     static constexpr std::size_t maximum_request_size_ = 16 * 1024 * 1024;
+    static constexpr std::size_t default_maximum_connections_ = 128;
     static constexpr std::size_t maximum_events_ = 64;
     static constexpr uintptr_t response_ready_event_id_ = 1;
     static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
 
     int requested_port_ = 0;
     std::chrono::milliseconds request_read_timeout_ = std::chrono::seconds(30);
+    std::size_t maximum_connections_ = default_maximum_connections_;
     int bound_port_ = 0;
     int listener_socket_ = -1;
     int bound_tls_port_ = 0;
@@ -429,6 +431,13 @@ private:
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) return;
                 return;
+            }
+
+            // Count every registered client, including connections still in a TLS handshake.
+            // Reject before allocating connection state or an OpenSSL session.
+            if (clients_.size() >= maximum_connections_) {
+                close(client_socket);
+                continue;
             }
 
             int no_sigpipe = 1;
@@ -1146,6 +1155,19 @@ public:
 
     int https_port() const noexcept {
         return bound_tls_port_;
+    }
+
+    std::expected<void, std::string> set_maximum_connections(std::size_t maximum_connections) {
+        if (started_) {
+            return std::unexpected<std::string>(
+                "Maximum connections must be configured before start()");
+        }
+        if (maximum_connections == 0) {
+            return std::unexpected<std::string>(
+                "Maximum connections must be greater than zero");
+        }
+        maximum_connections_ = maximum_connections;
+        return {};
     }
 
     std::expected<void, std::string> File_Link(

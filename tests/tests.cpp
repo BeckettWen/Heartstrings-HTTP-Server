@@ -624,6 +624,111 @@ TEST(unittests, incomplete_https_request_has_read_deadline){
         << outcome.response;
 }
 
+TEST(unittests, maximum_connection_limit_rejects_excess_and_reuses_capacity){
+    const std::filesystem::path fixture =
+        std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";
+    socket_native server(0);
+    ASSERT_TRUE(server.set_maximum_connections(1).has_value());
+    EXPECT_FALSE(server.set_maximum_connections(0).has_value());
+    ASSERT_TRUE(server.File_Link("/limited", fixture).has_value());
+    ASSERT_TRUE(server.start().has_value());
+    EXPECT_FALSE(server.set_maximum_connections(2).has_value());
+
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+
+    auto connect_client = [&](int& descriptor) {
+        descriptor = socket(AF_INET, SOCK_STREAM, 0);
+        if (descriptor == -1) return false;
+        timeval timeout{3, 0};
+        (void)setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+        if (connect(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+            close(descriptor);
+            descriptor = -1;
+            return false;
+        }
+        return true;
+    };
+    auto send_all = [](int descriptor, std::string_view bytes) {
+        std::size_t offset = 0;
+        while (offset < bytes.size()) {
+            const ssize_t written = send(
+                descriptor, bytes.data() + offset, bytes.size() - offset, 0);
+            if (written > 0) {
+                offset += static_cast<std::size_t>(written);
+            } else if (written == -1 && errno == EINTR) {
+                continue;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    int first_client = -1;
+    if (!connect_client(first_client)) {
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not connect the first limited client";
+        return;
+    }
+    const bool first_request_started = send_all(
+        first_client, "GET /limited HTTP/1.1\r\nHost: localhost\r\nX-Partial:");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    int excess_client = -1;
+    const bool excess_connected = connect_client(excess_client);
+    char excess_response_byte = 0;
+    const ssize_t excess_read = excess_connected
+        ? recv(excess_client, &excess_response_byte, 1, 0)
+        : -1;
+    const bool excess_was_rejected = !excess_connected || excess_read == 0 ||
+        (excess_read == -1 && errno == ECONNRESET);
+    if (excess_client >= 0) close(excess_client);
+    close(first_client);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    int replacement_client = -1;
+    bool replacement_connected = connect_client(replacement_client);
+    const std::string replacement_request =
+        "GET /limited HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    bool replacement_sent = replacement_connected && send_all(replacement_client, replacement_request);
+    std::string replacement_response;
+    std::array<char, 1024> response_buffer{};
+    bool replacement_receive_failed = false;
+    while (replacement_sent) {
+        const ssize_t bytes_read = recv(
+            replacement_client, response_buffer.data(), response_buffer.size(), 0);
+        if (bytes_read > 0) {
+            replacement_response.append(response_buffer.data(), static_cast<std::size_t>(bytes_read));
+        } else if (bytes_read == 0) {
+            break;
+        } else if (errno != EINTR) {
+            replacement_receive_failed = true;
+            break;
+        }
+    }
+    if (replacement_client >= 0) close(replacement_client);
+    server.stop();
+    server_thread.join();
+
+    EXPECT_TRUE(first_request_started);
+    EXPECT_TRUE(excess_was_rejected) << "An over-limit client was not rejected";
+    EXPECT_TRUE(replacement_connected);
+    EXPECT_TRUE(replacement_sent);
+    EXPECT_FALSE(replacement_receive_failed);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+    EXPECT_NE(replacement_response.find("HTTP/1.1 200 OK"), std::string::npos)
+        << replacement_response;
+}
+
 TEST(application_handler_tests, file_link_routes_get_and_head_requests){
     const std::filesystem::path fixture =
         std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";

@@ -44,7 +44,7 @@ ProjectVersionInfo.h      X-18 project version information
 3. Parsed requests are handled by the file router in the shared task pool. Register files with `File_Link(route, file)`.
 4. `GET` serves the linked file; `HEAD` serves its headers without a body. Unknown routes/files return `404`; unsupported methods return `405`.
 5. HTTP/1.1 connections remain alive unless a request says `Connection: close`. HTTP/1.0 connections close by default and remain open only with `Connection: keep-alive`. Pipelined requests are processed and answered in order.
-6. Idle keep-alive connections close after 30 seconds. Incomplete requests also have an absolute 30-second read deadline, not extended by trickled bytes; they receive `408 Request Timeout`. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
+6. At most 128 client connections are tracked by default across HTTP and HTTPS. Configure another positive limit before `start()` with `set_maximum_connections(limit)`; excess accepted sockets are immediately closed. Idle keep-alive connections close after 30 seconds. Incomplete requests also have an absolute 30-second read deadline, not extended by trickled bytes; they receive `408 Request Timeout`. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
 
 Each client connection owns its own StateMachine. It moves from `ReadingHeaders` to `KeepAlive` while a request is handled, returns to `ReadingHeaders` after a persistent response, and enters `Closing` when the connection should end.
 
@@ -56,6 +56,9 @@ This project currently has a test executable rather than a standalone server exe
 
 ```cpp
 socket_native server(8080);
+if (auto limited = server.set_maximum_connections(64); !limited) {
+    // Handle limited.error(). Configure before start().
+}
 if (auto linked = server.File_Link("/", "www/index.html"); !linked) {
     // Handle linked.error().
 }

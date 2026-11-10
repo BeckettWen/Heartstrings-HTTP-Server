@@ -35,6 +35,10 @@ std::expected<void, std::string> Server::enable_tls(TLSConfiguration configurati
     return implementation_->server.enable_tls(std::move(internal_configuration));
 }
 
+std::expected<void, std::string> Server::set_maximum_connections(std::size_t maximum_connections) {
+    return implementation_->server.set_maximum_connections(maximum_connections);
+}
+
 std::expected<void, std::string> Server::File_Link(
     std::string route,
     std::filesystem::path file) {
