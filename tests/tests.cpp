@@ -729,6 +729,108 @@ TEST(unittests, maximum_connection_limit_rejects_excess_and_reuses_capacity){
         << replacement_response;
 }
 
+TEST(memory_budget_tests, applies_even_baseline_and_age_weighted_pool){
+    ConnectionMemoryBudget budget(1000);
+    auto oldest = budget.register_connection();
+    auto middle = budget.register_connection();
+    auto newest = budget.register_connection();
+
+    EXPECT_EQ(oldest.allowance(), 368u);
+    EXPECT_EQ(middle.allowance(), 333u);
+    EXPECT_EQ(newest.allowance(), 299u);
+    EXPECT_EQ(oldest.allowance() + middle.allowance() + newest.allowance(), 1000u);
+
+    ASSERT_TRUE(oldest.try_reserve(368));
+    EXPECT_FALSE(oldest.try_reserve(1));
+    EXPECT_EQ(budget.used(), 368u);
+    oldest.release(100);
+    EXPECT_EQ(oldest.used(), 268u);
+    EXPECT_EQ(budget.used(), 268u);
+}
+
+TEST(memory_budget_tests, restores_released_share_after_connection_leaves){
+    ConnectionMemoryBudget budget(1000);
+    auto oldest = budget.register_connection();
+    auto newest = budget.register_connection();
+    EXPECT_EQ(oldest.allowance(), 534u);
+    EXPECT_EQ(newest.allowance(), 466u);
+
+    newest = ConnectionMemoryBudget::Lease{};
+    EXPECT_EQ(oldest.allowance(), 1000u);
+    ASSERT_TRUE(oldest.try_reserve(900));
+    EXPECT_EQ(budget.used(), 900u);
+}
+
+TEST(unittests, memory_budget_is_configurable_before_start_only){
+    socket_native server(0);
+    EXPECT_FALSE(server.set_memory_budget(0).has_value());
+    ASSERT_TRUE(server.set_memory_budget(64 * 1024).has_value());
+    ASSERT_TRUE(server.start().has_value());
+    EXPECT_FALSE(server.set_memory_budget(128 * 1024).has_value());
+}
+
+TEST(unittests, memory_budget_rejects_response_that_cannot_be_reserved){
+    const std::filesystem::path fixture =
+        std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";
+    socket_native server(0);
+    ASSERT_TRUE(server.set_memory_budget(16 * 1024).has_value());
+    ASSERT_TRUE(server.File_Link("/budgeted", fixture).has_value());
+    ASSERT_TRUE(server.start().has_value());
+
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+    const int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket == -1) {
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not create memory-budget test socket";
+        return;
+    }
+    timeval receive_timeout{3, 0};
+    (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+    if (connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+        close(client_socket);
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not connect memory-budget test socket";
+        return;
+    }
+
+    const std::string request =
+        "GET /budgeted HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    const ssize_t request_written = send(client_socket, request.data(), request.size(), 0);
+    std::string response;
+    std::array<char, 1024> buffer{};
+    bool receive_failed = request_written != static_cast<ssize_t>(request.size());
+    while (!receive_failed) {
+        const ssize_t bytes_read = recv(client_socket, buffer.data(), buffer.size(), 0);
+        if (bytes_read > 0) {
+            response.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+        } else if (bytes_read == 0) {
+            break;
+        } else if (errno != EINTR) {
+            receive_failed = true;
+        }
+    }
+
+    close(client_socket);
+    server.stop();
+    server_thread.join();
+
+    EXPECT_FALSE(receive_failed);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+    EXPECT_NE(response.find("HTTP/1.1 503 Service Unavailable"), std::string::npos) << response;
+    EXPECT_NE(response.find("Memory budget exhausted"), std::string::npos) << response;
+}
+
 TEST(application_handler_tests, file_link_routes_get_and_head_requests){
     const std::filesystem::path fixture =
         std::filesystem::path(__FILE__).parent_path() / "fixtures" / "welcome.html";

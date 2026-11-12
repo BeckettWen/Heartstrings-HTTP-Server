@@ -39,6 +39,8 @@ public:
     std::expected<void, std::string> enable_tls(TLSConfiguration configuration);
     // Configure a positive HTTP+HTTPS connection cap before start(); default is 128.
     std::expected<void, std::string> set_maximum_connections(std::size_t maximum_connections);
+    // Configure the positive lazy payload-memory budget before start(); default is 512 MiB.
+    std::expected<void, std::string> set_memory_budget(std::size_t bytes);
     std::expected<void, std::string> File_Link(
         std::string route,
         std::filesystem::path file);

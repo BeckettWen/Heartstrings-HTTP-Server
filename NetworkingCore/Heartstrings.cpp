@@ -39,6 +39,10 @@ std::expected<void, std::string> Server::set_maximum_connections(std::size_t max
     return implementation_->server.set_maximum_connections(maximum_connections);
 }
 
+std::expected<void, std::string> Server::set_memory_budget(std::size_t bytes) {
+    return implementation_->server.set_memory_budget(bytes);
+}
+
 std::expected<void, std::string> Server::File_Link(
     std::string route,
     std::filesystem::path file) {

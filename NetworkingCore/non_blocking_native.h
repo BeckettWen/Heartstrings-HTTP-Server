@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <netinet/in.h>
@@ -39,6 +40,7 @@
 #include "../Subsystems/Aegis.hpp"
 #include "../Subsystems/ThreadPool.hpp"
 #include "ApplicationHandler.hpp"
+#include "ConnectionMemoryBudget.hpp"
 
 struct TLSConfiguration {
     int port = 0;
@@ -139,6 +141,9 @@ private:
         bool request_in_flight = false;
         bool close_after_response = false;
         bool peer_closed = false;
+        ConnectionMemoryBudget::Lease memory_lease;
+        std::size_t request_buffer_charge = 0;
+        std::size_t response_memory_charge = 0;
         std::string response_version = "HTTP/1.1";
         std::vector<std::uint8_t> request_bytes;
         std::optional<std::chrono::steady_clock::time_point> request_read_started;
@@ -172,6 +177,8 @@ private:
 
     static constexpr std::size_t maximum_request_size_ = 16 * 1024 * 1024;
     static constexpr std::size_t default_maximum_connections_ = 128;
+    static constexpr std::size_t default_memory_budget_ = 512 * 1024 * 1024;
+    static constexpr std::size_t aegis_memory_chunk_size_ = 1024 * 1024;
     static constexpr std::size_t maximum_events_ = 64;
     static constexpr uintptr_t response_ready_event_id_ = 1;
     static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
@@ -190,11 +197,14 @@ private:
     bool run_finished_ = false;
     std::atomic<bool> stop_requested_ = false;
     std::array<struct kevent, maximum_events_> events_{};
+    ConnectionMemoryBudget memory_budget_{default_memory_budget_};
     std::unordered_map<int, std::shared_ptr<client_connection>> clients_;
     ApplicationHandler application_handler_;
     struct response_completion {
         std::shared_ptr<client_connection> connection;
         httpresponse response;
+        std::size_t memory_charge = 0;
+        bool close_after_response = false;
     };
     std::mutex completion_mutex_;
     std::deque<response_completion> response_completions_;
@@ -381,12 +391,48 @@ private:
 
     void enqueue_response_completion(
         const std::shared_ptr<client_connection>& connection,
-        httpresponse response) {
+        httpresponse response,
+        std::size_t memory_charge = 0,
+        bool close_after_response = false) {
         {
             std::lock_guard lock(completion_mutex_);
-            response_completions_.push_back({connection, std::move(response)});
+            response_completions_.push_back({
+                connection, std::move(response), memory_charge, close_after_response});
         }
         trigger_response_ready_event();
+    }
+
+    static std::optional<std::size_t> request_work_memory_estimate(std::size_t body_size) noexcept {
+        if (body_size == 0) return 0;
+        if (body_size > std::numeric_limits<std::size_t>::max() - (aegis_memory_chunk_size_ - 1)) {
+            return std::nullopt;
+        }
+        const std::size_t chunks =
+            (body_size + aegis_memory_chunk_size_ - 1) / aegis_memory_chunk_size_;
+        if (chunks > std::numeric_limits<std::size_t>::max() / aegis_memory_chunk_size_) {
+            return std::nullopt;
+        }
+        const std::size_t aegis_bytes = chunks * aegis_memory_chunk_size_;
+        if (aegis_bytes > std::numeric_limits<std::size_t>::max() / 2) {
+            return std::nullopt;
+        }
+        const std::size_t fixed_aegis_bytes = 2 * aegis_bytes;
+        if (body_size > (std::numeric_limits<std::size_t>::max() - fixed_aegis_bytes) / 2) {
+            return std::nullopt;
+        }
+        // Covers the parsed body, Aegis's chunk allocation and readback vector,
+        // and the restored body while those allocations briefly overlap.
+        return body_size * 2 + fixed_aegis_bytes;
+    }
+
+    static std::optional<std::size_t> response_memory_estimate(std::size_t body_size) noexcept {
+        constexpr std::size_t response_overhead = 32 * 1024;
+        if (body_size > (std::numeric_limits<std::size_t>::max() - response_overhead) / 3) {
+            return std::nullopt;
+        }
+        // The handler body, serializer buffer and returned serialized bytes can
+        // overlap before the response is written to the socket.
+        return body_size * 3 + response_overhead;
     }
 
     static bool has_connection_token(const HTTPRequest& request, std::string_view token) {
@@ -450,6 +496,7 @@ private:
             std::shared_ptr<client_connection> connection;
             try {
                 connection = std::make_shared<client_connection>();
+                connection->memory_lease = memory_budget_.register_connection();
             } catch (...) {
                 close(client_socket);
                 continue;
@@ -517,6 +564,9 @@ private:
         const auto client = clients_.find(descriptor);
         if (client != clients_.end()) {
             mark_connection_closing(client->second);
+            std::vector<std::uint8_t>().swap(client->second->response_bytes);
+            client->second->memory_lease.release(client->second->response_memory_charge);
+            client->second->response_memory_charge = 0;
             clients_.erase(client);
         }
     }
@@ -537,7 +587,20 @@ private:
     void dispatch_request(
         const std::shared_ptr<client_connection>& connection,
         HTTPRequest request) {
+        const auto request_charge = request_work_memory_estimate(request.body.size());
+        if (!request_charge || !connection->memory_lease.try_reserve(*request_charge)) {
+            enqueue_immediate_response(connection,
+                httpresponse{
+                    .statusCode = 503,
+                    .statusReason = "Service Unavailable",
+                    .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                    .body = "Memory budget exhausted"
+                }, true);
+            return;
+        }
+
         if (!transition_to_keep_alive(connection)) {
+            connection->memory_lease.release(*request_charge);
             close_client(connection->descriptor);
             return;
         }
@@ -548,21 +611,29 @@ private:
         connection->response_version = request.version;
 
         auto submission = request_task_pool_.Insert_Into_thread_pool(
-            [this, connection, request = std::move(request)]() mutable {
+            [this, connection, request = std::move(request),
+             request_memory_charge = *request_charge]() mutable {
                 httpresponse response;
+                std::size_t response_memory_charge = 0;
+                bool force_close_after_response = false;
                 try {
-                    AegisHttpRequestStorage request_body_storage;
-                    auto stored_body = request_body_storage.store(request.body);
-                    if (!stored_body) {
+                    const std::size_t estimated_body_size =
+                        application_handler_.estimated_response_body_size(request);
+                    const auto estimated_response_charge = response_memory_estimate(estimated_body_size);
+                    if (!estimated_response_charge ||
+                        !connection->memory_lease.try_reserve(*estimated_response_charge)) {
+                        force_close_after_response = true;
                         response = httpresponse{
-                            .statusCode = 500,
-                            .statusReason = "Internal Server Error",
+                            .statusCode = 503,
+                            .statusReason = "Service Unavailable",
                             .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
-                            .body = "Request storage failed"
+                            .body = "Memory budget exhausted"
                         };
                     } else {
-                        auto restored_body = request_body_storage.retrieve();
-                        if (!restored_body) {
+                        response_memory_charge = *estimated_response_charge;
+                        AegisHttpRequestStorage request_body_storage;
+                        auto stored_body = request_body_storage.store(request.body);
+                        if (!stored_body) {
                             response = httpresponse{
                                 .statusCode = 500,
                                 .statusReason = "Internal Server Error",
@@ -570,11 +641,26 @@ private:
                                 .body = "Request storage failed"
                             };
                         } else {
-                            request.body = std::move(*restored_body);
-                            response = application_handler_.handle(request);
+                            auto restored_body = request_body_storage.retrieve();
+                            if (!restored_body) {
+                                response = httpresponse{
+                                    .statusCode = 500,
+                                    .statusReason = "Internal Server Error",
+                                    .headers = {{"Content-Type", "text/plain; charset=utf-8"}},
+                                    .body = "Request storage failed"
+                                };
+                            } else {
+                                request.body = std::move(*restored_body);
+                                response = application_handler_.handle(request, estimated_body_size);
+                                force_close_after_response = response.statusCode == 503;
+                            }
                         }
                     }
                 } catch (...) {
+                    if (response_memory_charge != 0) {
+                        connection->memory_lease.release(response_memory_charge);
+                        response_memory_charge = 0;
+                    }
                     response = httpresponse{
                         .statusCode = 500,
                         .statusReason = "Internal Server Error",
@@ -583,10 +669,13 @@ private:
                     };
                 }
 
-                enqueue_response_completion(connection, std::move(response));
+                connection->memory_lease.release(request_memory_charge);
+                enqueue_response_completion(
+                    connection, std::move(response), response_memory_charge, force_close_after_response);
             });
 
         if (!submission) {
+            connection->memory_lease.release(*request_charge);
             connection->close_after_response = true;
             enqueue_response_completion(connection, httpresponse{
                 .statusCode = 503,
@@ -609,9 +698,15 @@ private:
             return;
         }
 
+        const std::size_t parser_work_charge = connection->request_bytes.size();
+        if (!connection->memory_lease.try_reserve(parser_work_charge)) {
+            close_client(connection->descriptor);
+            return;
+        }
         HTTPParser parser(connection->request_bytes);
         auto parsed_request = parser.parse();
         if (!parsed_request) {
+            connection->memory_lease.release(parser_work_charge);
             if (parsed_request.error() == HTTPParserError::UnexpectedEOF && !peer_closed) return;
             connection->request_read_started.reset();
 
@@ -629,10 +724,52 @@ private:
 
         const std::size_t consumed_bytes = parser.bytesConsumed();
         connection->request_read_started.reset();
+        dispatch_request(connection, std::move(*parsed_request));
+        connection->memory_lease.release(parser_work_charge);
         connection->request_bytes.erase(
             connection->request_bytes.begin(),
             connection->request_bytes.begin() + static_cast<std::ptrdiff_t>(consumed_bytes));
-        dispatch_request(connection, std::move(*parsed_request));
+        if (connection->request_bytes.empty() && connection->request_buffer_charge != 0) {
+            std::vector<std::uint8_t>().swap(connection->request_bytes);
+            connection->memory_lease.release(connection->request_buffer_charge);
+            connection->request_buffer_charge = 0;
+        }
+    }
+
+    bool append_request_data(
+        const std::shared_ptr<client_connection>& connection,
+        const std::uint8_t* data,
+        std::size_t size) {
+        const std::size_t required_size = connection->request_bytes.size() + size;
+        const std::size_t old_capacity = connection->request_bytes.capacity();
+        if (required_size > old_capacity) {
+            const std::size_t reserved_bytes = required_size - old_capacity;
+            if (!connection->memory_lease.try_reserve(reserved_bytes)) return false;
+            try {
+                connection->request_bytes.reserve(required_size);
+            } catch (...) {
+                connection->memory_lease.release(reserved_bytes);
+                return false;
+            }
+
+            const std::size_t actual_growth = connection->request_bytes.capacity() - old_capacity;
+            if (actual_growth > reserved_bytes &&
+                !connection->memory_lease.try_reserve(actual_growth - reserved_bytes)) {
+                return false;
+            }
+            if (actual_growth < reserved_bytes) {
+                connection->memory_lease.release(reserved_bytes - actual_growth);
+            }
+            connection->request_buffer_charge += actual_growth;
+        }
+
+        try {
+            connection->request_bytes.insert(
+                connection->request_bytes.end(), data, data + size);
+        } catch (...) {
+            return false;
+        }
+        return true;
     }
 
     void handle_plain_client_read(const std::shared_ptr<client_connection>& connection, bool peer_closed) {
@@ -656,8 +793,10 @@ private:
                     !connection->request_read_started) {
                     connection->request_read_started = std::chrono::steady_clock::now();
                 }
-                connection->request_bytes.insert(
-                    connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
+                if (!append_request_data(connection, read_buffer.data(), incoming_size)) {
+                    close_client(connection->descriptor);
+                    return;
+                }
                 connection->last_activity = std::chrono::steady_clock::now();
                 if (!connection->request_in_flight) process_buffered_request(connection, false);
                 continue;
@@ -704,8 +843,10 @@ private:
                     !connection->request_read_started) {
                     connection->request_read_started = std::chrono::steady_clock::now();
                 }
-                connection->request_bytes.insert(
-                    connection->request_bytes.end(), read_buffer.begin(), read_buffer.begin() + bytes_read);
+                if (!append_request_data(connection, read_buffer.data(), bytes_read)) {
+                    close_client(connection->descriptor);
+                    return;
+                }
                 connection->last_activity = std::chrono::steady_clock::now();
                 if (!connection->request_in_flight) process_buffered_request(connection, false);
                 if (SSL_pending(connection->ssl_session) > 0) continue;
@@ -744,10 +885,12 @@ private:
     }
 
     void finish_response_write(const std::shared_ptr<client_connection>& connection) {
-        connection->response_bytes.clear();
+        std::vector<std::uint8_t>().swap(connection->response_bytes);
         connection->response_offset = 0;
         connection->tls_write_wants_read = false;
         (void)set_client_write_interest(connection, false);
+        connection->memory_lease.release(connection->response_memory_charge);
+        connection->response_memory_charge = 0;
         connection->last_activity = std::chrono::steady_clock::now();
 
         if (connection->close_after_response ||
@@ -871,18 +1014,34 @@ private:
         for (auto& completion : completions) {
             const int descriptor = completion.connection->descriptor;
             const auto client = clients_.find(descriptor);
-            if (client == clients_.end() || client->second != completion.connection) continue;
+            if (client == clients_.end() || client->second != completion.connection) {
+                completion.connection->memory_lease.release(completion.memory_charge);
+                continue;
+            }
 
+            if (completion.close_after_response) completion.connection->close_after_response = true;
             httpresponse response = std::move(completion.response);
             response.httpVersion = completion.connection->response_version;
             response.headers.insert_or_assign(
                 "Connection", completion.connection->close_after_response ? "close" : "keep-alive");
             httpSerializer serializer;
             if (auto serialized = serializer.Serialize(response); !serialized) {
+                completion.connection->memory_lease.release(completion.memory_charge);
                 close_client(descriptor);
                 continue;
             }
-            completion.connection->response_bytes = serializer.ReturnSerializedResult();
+            std::vector<std::uint8_t> serialized_response = serializer.ReturnSerializedResult();
+            if (serialized_response.size() > completion.memory_charge) {
+                const std::size_t additional_charge = serialized_response.size() - completion.memory_charge;
+                if (!completion.connection->memory_lease.try_reserve(additional_charge)) {
+                    completion.connection->memory_lease.release(completion.memory_charge);
+                    close_client(descriptor);
+                    continue;
+                }
+                completion.memory_charge += additional_charge;
+            }
+            completion.connection->response_memory_charge = completion.memory_charge;
+            completion.connection->response_bytes = std::move(serialized_response);
             completion.connection->response_offset = 0;
             if (!set_client_write_interest(completion.connection, true)) {
                 close_client(descriptor);
@@ -1167,6 +1326,19 @@ public:
                 "Maximum connections must be greater than zero");
         }
         maximum_connections_ = maximum_connections;
+        return {};
+    }
+
+    std::expected<void, std::string> set_memory_budget(std::size_t bytes) {
+        if (started_) {
+            return std::unexpected<std::string>("Memory budget must be configured before start()");
+        }
+        if (bytes == 0) {
+            return std::unexpected<std::string>("Memory budget must be greater than zero");
+        }
+        if (!memory_budget_.set_limit(bytes)) {
+            return std::unexpected<std::string>("Memory budget cannot be changed while connections are active");
+        }
         return {};
     }
 

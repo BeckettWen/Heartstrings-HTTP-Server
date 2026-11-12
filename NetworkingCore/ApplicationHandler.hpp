@@ -1,10 +1,11 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
+#include <limits>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -88,7 +89,23 @@ public:
         return routing_.set(std::move(route), std::move(file));
     }
 
+    std::size_t estimated_response_body_size(const HTTPRequest& request) const {
+        if (request.method != "GET" && request.method != "HEAD") return 0;
+        auto route = routing_.retrieve(request);
+        if (!route) return 0;
+
+        std::error_code filesystem_error;
+        if (!std::filesystem::is_regular_file(*route, filesystem_error) || filesystem_error) return 0;
+        const std::uintmax_t size = std::filesystem::file_size(*route, filesystem_error);
+        if (filesystem_error || size > std::numeric_limits<std::size_t>::max()) return 0;
+        return static_cast<std::size_t>(size);
+    }
+
     httpresponse handle(const HTTPRequest& request) const {
+        return handle(request, std::numeric_limits<std::size_t>::max());
+    }
+
+    httpresponse handle(const HTTPRequest& request, std::size_t maximum_file_size) const {
         if (request.method != "GET" && request.method != "HEAD") {
             auto response = error_response(405, "Method Not Allowed", "Method Not Allowed");
             response.headers["Allow"] = "GET, HEAD";
@@ -110,6 +127,23 @@ public:
             return response;
         }
 
+        const std::uintmax_t file_size = std::filesystem::file_size(*route, filesystem_error);
+        if (filesystem_error) {
+            auto response = error_response(500, "Internal Server Error", "File could not be inspected");
+            response.suppressBody = request.method == "HEAD";
+            return response;
+        }
+        if (file_size > maximum_file_size) {
+            auto response = error_response(503, "Service Unavailable", "Memory budget exhausted");
+            response.suppressBody = request.method == "HEAD";
+            return response;
+        }
+        if (file_size > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
+            auto response = error_response(503, "Service Unavailable", "File exceeds supported response size");
+            response.suppressBody = request.method == "HEAD";
+            return response;
+        }
+
         std::ifstream file(*route, std::ios::binary);
         if (!file) {
             auto response = error_response(500, "Internal Server Error", "File could not be opened");
@@ -117,11 +151,18 @@ public:
             return response;
         }
 
-        const std::istreambuf_iterator<char> file_begin(file);
-        const std::istreambuf_iterator<char> file_end;
-        std::string body(file_begin, file_end);
-        if (file.bad()) {
+        std::string body(static_cast<std::size_t>(file_size), '\0');
+        if (!body.empty()) {
+            file.read(body.data(), static_cast<std::streamsize>(body.size()));
+        }
+        if (file.bad() || file.gcount() != static_cast<std::streamsize>(body.size())) {
             auto response = error_response(500, "Internal Server Error", "File could not be read");
+            response.suppressBody = request.method == "HEAD";
+            return response;
+        }
+        char unexpected_extra_byte = 0;
+        if (file.get(unexpected_extra_byte)) {
+            auto response = error_response(503, "Service Unavailable", "File changed beyond reserved memory");
             response.suppressBody = request.method == "HEAD";
             return response;
         }
