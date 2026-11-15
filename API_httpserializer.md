@@ -14,10 +14,11 @@ struct httpresponse {
     std::string body;
     bool suppressBody = false;
     std::string httpVersion = "HTTP/1.1";
+    std::optional<std::uint64_t> contentLength;
 };
 ```
 
-The response body is a `std::string` and may contain binary bytes. `statusReason` can be left empty; the serializer uses its built-in reason phrase when one is known. `suppressBody` supports `HEAD` responses while retaining the representation length. `httpVersion` defaults to `HTTP/1.1` and can be set to the parsed request version.
+The response body is a `std::string` and may contain binary bytes. `contentLength` optionally overrides the serialized `Content-Length`, which lets the server serialize headers for a body it will stream separately. `statusReason` can be left empty; the serializer uses its built-in reason phrase when one is known. `suppressBody` supports `HEAD` responses while retaining the representation length. `httpVersion` defaults to `HTTP/1.1` and can be set to the parsed request version.
 
 ## `httpSerializer`
 
@@ -45,7 +46,7 @@ Serializes a response into the serializer's byte buffer. Each successful call re
 
 - writes the status line using `httpVersion` (or `HTTP/1.1` if it is empty);
 - emits headers in deterministic, case-sensitive lexicographic name order;
-- replaces any supplied `Content-Length` with the actual body byte count;
+- replaces any supplied `Content-Length` with `contentLength`, or the body byte count if no override was set;
 - adds `Connection: close` unless a connection header was supplied; and
 - appends the body bytes unless `suppressBody` is true. `Content-Length` remains the unsuppressed representation length.
 
@@ -108,4 +109,4 @@ Maps parser errors to an HTTP status and reason phrase. Syntax/framing errors ma
 
 ## Current scope
 
-The serializer does not implement response streaming, chunked response encoding, header validation, or keep-alive policy management. Those connection policies are handled by `socket_native`.
+The serializer itself does not stream or implement chunked transfer encoding, header validation, or keep-alive policy management. The server streams linked files in bounded chunks using a known `Content-Length`; those connection and file-transfer policies are handled by `socket_native`.

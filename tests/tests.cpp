@@ -9,6 +9,7 @@
 #include <string_view>
 #include <expected>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <latch>
@@ -847,35 +848,152 @@ TEST(application_handler_tests, file_link_routes_get_and_head_requests){
         .target = "/welcome?from=test",
         .version = "HTTP/1.1"
     };
-    const httpresponse get_response = handler.handle(get_request);
-    EXPECT_EQ(get_response.statusCode, 200);
-    EXPECT_EQ(get_response.body, expected_body);
-    EXPECT_EQ(get_response.headers.at("Content-Type"), "text/html; charset=utf-8");
-    EXPECT_FALSE(get_response.suppressBody);
+    ApplicationResponse get_result = handler.handle(get_request);
+    EXPECT_EQ(get_result.response.statusCode, 200);
+    EXPECT_TRUE(get_result.response.body.empty());
+    EXPECT_EQ(get_result.response.contentLength, expected_body.size());
+    EXPECT_EQ(get_result.response.headers.at("Content-Type"), "text/html; charset=utf-8");
+    EXPECT_TRUE(get_result.response.suppressBody);
+    ASSERT_TRUE(get_result.file.has_value());
+    EXPECT_EQ(get_result.file->expected_name(), "welcome.html");
+
+    std::string file_contents(expected_body.size(), '\0');
+    const ssize_t file_bytes_read = pread(
+        get_result.file->descriptor(), file_contents.data(), file_contents.size(), 0);
+    ASSERT_EQ(file_bytes_read, static_cast<ssize_t>(expected_body.size()));
+    EXPECT_EQ(file_contents, expected_body);
 
     HTTPRequest head_request{
         .method = "HEAD",
         .target = "/welcome",
         .version = "HTTP/1.1"
     };
-    const httpresponse head_response = handler.handle(head_request);
-    EXPECT_EQ(head_response.statusCode, 200);
-    EXPECT_EQ(head_response.body.size(), expected_body.size());
-    EXPECT_TRUE(head_response.suppressBody);
+    ApplicationResponse head_result = handler.handle(head_request);
+    EXPECT_EQ(head_result.response.statusCode, 200);
+    EXPECT_TRUE(head_result.response.body.empty());
+    EXPECT_EQ(head_result.response.contentLength, expected_body.size());
+    EXPECT_TRUE(head_result.response.suppressBody);
+    EXPECT_FALSE(head_result.file.has_value());
+    httpSerializer head_serializer;
+    ASSERT_TRUE(head_serializer.Serialize(head_result.response).has_value());
+    const std::vector<std::uint8_t> serialized_head = head_serializer.ReturnSerializedResult();
+    const std::string serialized_head_text(serialized_head.begin(), serialized_head.end());
+    EXPECT_NE(serialized_head_text.find(
+        "Content-Length: " + std::to_string(expected_body.size())), std::string::npos);
+    const std::size_t head_header_end = serialized_head_text.find("\r\n\r\n");
+    ASSERT_NE(head_header_end, std::string::npos);
+    EXPECT_EQ(serialized_head_text.size(), head_header_end + 4);
 
     HTTPRequest missing_request{
         .method = "GET",
         .target = "/missing",
         .version = "HTTP/1.1"
     };
-    EXPECT_EQ(handler.handle(missing_request).statusCode, 404);
+    EXPECT_EQ(handler.handle(missing_request).response.statusCode, 404);
 
     HTTPRequest unsupported_method{
         .method = "POST",
         .target = "/welcome",
         .version = "HTTP/1.1"
     };
-    EXPECT_EQ(handler.handle(unsupported_method).statusCode, 405);
+    EXPECT_EQ(handler.handle(unsupported_method).response.statusCode, 405);
+}
+
+TEST(unittests, large_static_file_is_sent_in_bounded_chunks){
+    constexpr std::size_t file_size = 2 * 64 * 1024 + 13;
+    const std::filesystem::path file_path =
+        std::filesystem::temp_directory_path() /
+        ("HeartstringsPhase7-" + std::to_string(getpid()) + ".bin");
+    struct temporary_file_cleanup {
+        std::filesystem::path path;
+        ~temporary_file_cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{file_path};
+
+    std::string expected_body(file_size, '\0');
+    for (std::size_t index = 0; index < expected_body.size(); ++index) {
+        expected_body[index] = static_cast<char>('a' + (index % 26));
+    }
+    {
+        std::ofstream file(file_path, std::ios::binary);
+        ASSERT_TRUE(file.good());
+        file.write(expected_body.data(), static_cast<std::streamsize>(expected_body.size()));
+        ASSERT_TRUE(file.good());
+    }
+
+    socket_native server(0);
+    ASSERT_TRUE(server.File_Link("/large", file_path).has_value());
+    ASSERT_TRUE(server.start().has_value());
+    std::expected<void, std::string> server_result;
+    std::jthread server_thread([&] { server_result = server.run(); });
+
+    const int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket == -1) {
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not create large-file streaming test socket";
+        return;
+    }
+    timeval receive_timeout{3, 0};
+    (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<std::uint16_t>(server.port()));
+    if (connect(client_socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+        close(client_socket);
+        server.stop();
+        server_thread.join();
+        FAIL() << "Could not connect large-file streaming test socket";
+        return;
+    }
+
+    const std::string request =
+        "GET /large HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+    std::size_t request_offset = 0;
+    while (request_offset < request.size()) {
+        const ssize_t written = send(
+            client_socket, request.data() + request_offset, request.size() - request_offset, 0);
+        if (written > 0) {
+            request_offset += static_cast<std::size_t>(written);
+        } else if (written == -1 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    std::string response;
+    std::array<char, 16 * 1024> response_buffer{};
+    bool receive_failed = request_offset != request.size();
+    while (!receive_failed) {
+        const ssize_t bytes_read = recv(
+            client_socket, response_buffer.data(), response_buffer.size(), 0);
+        if (bytes_read > 0) {
+            response.append(response_buffer.data(), static_cast<std::size_t>(bytes_read));
+        } else if (bytes_read == 0) {
+            break;
+        } else if (errno != EINTR) {
+            receive_failed = true;
+        }
+    }
+
+    close(client_socket);
+    server.stop();
+    server_thread.join();
+
+    EXPECT_FALSE(receive_failed);
+    ASSERT_TRUE(server_result.has_value()) << server_result.error();
+    const std::size_t header_end = response.find("\r\n\r\n");
+    ASSERT_NE(header_end, std::string::npos) << response.size();
+    EXPECT_NE(response.substr(0, header_end).find(
+        "Content-Length: " + std::to_string(file_size)), std::string::npos);
+    EXPECT_EQ(response.substr(header_end + 4), expected_body);
 }
 
 TEST(unittests, keep_alive_pipelining_routes_files_in_request_order){

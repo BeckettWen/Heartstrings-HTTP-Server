@@ -2,6 +2,7 @@
 
 // macOS networking implementation using non-blocking sockets and kqueue.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -149,6 +150,8 @@ private:
         std::optional<std::chrono::steady_clock::time_point> request_read_started;
         std::vector<std::uint8_t> response_bytes;
         std::size_t response_offset = 0;
+        std::optional<StreamedFileBody> response_file;
+        std::uint64_t response_file_offset = 0;
         std::chrono::steady_clock::time_point last_activity = std::chrono::steady_clock::now();
         state_machine_type state_machine;
 
@@ -179,6 +182,7 @@ private:
     static constexpr std::size_t default_maximum_connections_ = 128;
     static constexpr std::size_t default_memory_budget_ = 512 * 1024 * 1024;
     static constexpr std::size_t aegis_memory_chunk_size_ = 1024 * 1024;
+    static constexpr std::size_t file_transfer_chunk_size_ = 64 * 1024;
     static constexpr std::size_t maximum_events_ = 64;
     static constexpr uintptr_t response_ready_event_id_ = 1;
     static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
@@ -205,6 +209,7 @@ private:
         httpresponse response;
         std::size_t memory_charge = 0;
         bool close_after_response = false;
+        std::optional<StreamedFileBody> file;
     };
     std::mutex completion_mutex_;
     std::deque<response_completion> response_completions_;
@@ -393,11 +398,12 @@ private:
         const std::shared_ptr<client_connection>& connection,
         httpresponse response,
         std::size_t memory_charge = 0,
-        bool close_after_response = false) {
+        bool close_after_response = false,
+        std::optional<StreamedFileBody> file = std::nullopt) {
         {
             std::lock_guard lock(completion_mutex_);
             response_completions_.push_back({
-                connection, std::move(response), memory_charge, close_after_response});
+                connection, std::move(response), memory_charge, close_after_response, std::move(file)});
         }
         trigger_response_ready_event();
     }
@@ -425,14 +431,10 @@ private:
         return body_size * 2 + fixed_aegis_bytes;
     }
 
-    static std::optional<std::size_t> response_memory_estimate(std::size_t body_size) noexcept {
+    static std::size_t response_memory_estimate() noexcept {
         constexpr std::size_t response_overhead = 32 * 1024;
-        if (body_size > (std::numeric_limits<std::size_t>::max() - response_overhead) / 3) {
-            return std::nullopt;
-        }
-        // The handler body, serializer buffer and returned serialized bytes can
-        // overlap before the response is written to the socket.
-        return body_size * 3 + response_overhead;
+        // Reserves a bounded file chunk plus response header serialization space.
+        return file_transfer_chunk_size_ + response_overhead;
     }
 
     static bool has_connection_token(const HTTPRequest& request, std::string_view token) {
@@ -565,6 +567,8 @@ private:
         if (client != clients_.end()) {
             mark_connection_closing(client->second);
             std::vector<std::uint8_t>().swap(client->second->response_bytes);
+            client->second->response_file.reset();
+            client->second->response_file_offset = 0;
             client->second->memory_lease.release(client->second->response_memory_charge);
             client->second->response_memory_charge = 0;
             clients_.erase(client);
@@ -614,14 +618,12 @@ private:
             [this, connection, request = std::move(request),
              request_memory_charge = *request_charge]() mutable {
                 httpresponse response;
+                std::optional<StreamedFileBody> response_file;
                 std::size_t response_memory_charge = 0;
                 bool force_close_after_response = false;
                 try {
-                    const std::size_t estimated_body_size =
-                        application_handler_.estimated_response_body_size(request);
-                    const auto estimated_response_charge = response_memory_estimate(estimated_body_size);
-                    if (!estimated_response_charge ||
-                        !connection->memory_lease.try_reserve(*estimated_response_charge)) {
+                    const std::size_t estimated_response_charge = response_memory_estimate();
+                    if (!connection->memory_lease.try_reserve(estimated_response_charge)) {
                         force_close_after_response = true;
                         response = httpresponse{
                             .statusCode = 503,
@@ -630,7 +632,7 @@ private:
                             .body = "Memory budget exhausted"
                         };
                     } else {
-                        response_memory_charge = *estimated_response_charge;
+                        response_memory_charge = estimated_response_charge;
                         AegisHttpRequestStorage request_body_storage;
                         auto stored_body = request_body_storage.store(request.body);
                         if (!stored_body) {
@@ -651,12 +653,15 @@ private:
                                 };
                             } else {
                                 request.body = std::move(*restored_body);
-                                response = application_handler_.handle(request, estimated_body_size);
-                                force_close_after_response = response.statusCode == 503;
+                                ApplicationResponse application_response =
+                                    application_handler_.handle(request);
+                                response = std::move(application_response.response);
+                                response_file = std::move(application_response.file);
                             }
                         }
                     }
                 } catch (...) {
+                    response_file.reset();
                     if (response_memory_charge != 0) {
                         connection->memory_lease.release(response_memory_charge);
                         response_memory_charge = 0;
@@ -671,7 +676,8 @@ private:
 
                 connection->memory_lease.release(request_memory_charge);
                 enqueue_response_completion(
-                    connection, std::move(response), response_memory_charge, force_close_after_response);
+                    connection, std::move(response), response_memory_charge,
+                    force_close_after_response, std::move(response_file));
             });
 
         if (!submission) {
@@ -887,6 +893,8 @@ private:
     void finish_response_write(const std::shared_ptr<client_connection>& connection) {
         std::vector<std::uint8_t>().swap(connection->response_bytes);
         connection->response_offset = 0;
+        connection->response_file.reset();
+        connection->response_file_offset = 0;
         connection->tls_write_wants_read = false;
         (void)set_client_write_interest(connection, false);
         connection->memory_lease.release(connection->response_memory_charge);
@@ -912,8 +920,49 @@ private:
         process_buffered_request(connection, connection->peer_closed);
     }
 
+    bool load_next_file_chunk(const std::shared_ptr<client_connection>& connection) {
+        if (!connection->response_file ||
+            connection->response_file_offset >= connection->response_file->size()) {
+            return false;
+        }
+
+        const std::uint64_t remaining =
+            connection->response_file->size() - connection->response_file_offset;
+        const std::size_t chunk_size = static_cast<std::size_t>(
+            std::min<std::uint64_t>(remaining, file_transfer_chunk_size_));
+        connection->response_bytes.resize(chunk_size);
+
+        ssize_t bytes_read = -1;
+        do {
+            bytes_read = pread(
+                connection->response_file->descriptor(),
+                connection->response_bytes.data(),
+                chunk_size,
+                static_cast<off_t>(connection->response_file_offset));
+        } while (bytes_read == -1 && errno == EINTR);
+
+        if (bytes_read <= 0) return false;
+        connection->response_bytes.resize(static_cast<std::size_t>(bytes_read));
+        connection->response_offset = 0;
+        connection->response_file_offset += static_cast<std::uint64_t>(bytes_read);
+        return true;
+    }
+
     void handle_client_write(const std::shared_ptr<client_connection>& connection) {
-        while (connection->response_offset < connection->response_bytes.size()) {
+        while (true) {
+            if (connection->response_offset >= connection->response_bytes.size()) {
+                if (connection->response_file &&
+                    connection->response_file_offset < connection->response_file->size()) {
+                    if (!load_next_file_chunk(connection)) {
+                        close_client(connection->descriptor);
+                        return;
+                    }
+                    return;
+                }
+                finish_response_write(connection);
+                return;
+            }
+
             if (connection->ssl_session != nullptr) {
                 std::size_t bytes_written = 0;
                 ERR_clear_error();
@@ -963,8 +1012,6 @@ private:
             close_client(connection->descriptor);
             return;
         }
-
-        finish_response_write(connection);
     }
 
     void handle_client_event(int descriptor, short filter, bool peer_closed) {
@@ -1043,6 +1090,8 @@ private:
             completion.connection->response_memory_charge = completion.memory_charge;
             completion.connection->response_bytes = std::move(serialized_response);
             completion.connection->response_offset = 0;
+            completion.connection->response_file = std::move(completion.file);
+            completion.connection->response_file_offset = 0;
             if (!set_client_write_interest(completion.connection, true)) {
                 close_client(descriptor);
             }

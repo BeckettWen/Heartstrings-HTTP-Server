@@ -4,7 +4,7 @@ The static-file application handler is implemented in `NetworkingCore/Applicatio
 
 ## `Routing`
 
-`Routing` stores exact URL-path-to-file mappings in a thread-safe `std::unordered_map`.
+`Routing` stores exact URL-path-to-file mappings in a thread-safe `std::unordered_map`. Each entry contains the linked filesystem path and the expected filename (derived from `path.filename()`); it does not load file contents into the route table.
 
 ### `set`
 
@@ -17,10 +17,15 @@ Registers or replaces a route. The route must be an absolute URL path beginning 
 ### `retrieve`
 
 ```cpp
-std::expected<std::filesystem::path, std::string> retrieve(const HTTPRequest& request) const;
+struct Routing::FileEntry {
+    std::filesystem::path path;
+    std::string expected_name;
+};
+
+std::expected<FileEntry, std::string> retrieve_file(const HTTPRequest& request) const;
 ```
 
-Looks up the path from the parsed request target. A query string is ignored for lookup, so `/guide?lang=en` matches the `/guide` route. Matching is exact; there are no wildcard routes or filesystem path joins based on client input.
+Looks up path metadata from the parsed request target. A query string is ignored for lookup, so `/guide?lang=en` matches the `/guide` route. Matching is exact; there are no wildcard routes or filesystem path joins based on client input.
 
 ## `ApplicationHandler`
 
@@ -37,10 +42,12 @@ The public registration API. Links a URL path to a file by calling `Routing::set
 ### `handle`
 
 ```cpp
-httpresponse handle(const HTTPRequest& request) const;
+ApplicationResponse handle(const HTTPRequest& request) const;
 ```
 
-Uses `Routing::retrieve` to find a file and returns its content as a response. It supports `GET` and `HEAD`; `HEAD` returns the representation's `Content-Length` but suppresses its body. Unknown routes or files return `404 Not Found`; other methods return `405 Method Not Allowed` with `Allow: GET, HEAD`. Files are read in binary mode. Common web extensions receive a basic MIME type; other extensions use `application/octet-stream`.
+Uses the route table to open and inspect the requested regular file, returning response metadata and an owned file descriptor for `GET`, rather than loading the whole file. The server sends the file in bounded 64 KiB chunks with a known `Content-Length`. `HEAD` returns the representation's `Content-Length` without a file body. Unknown routes or files return `404 Not Found`; other methods return `405 Method Not Allowed` with `Allow: GET, HEAD`. Common web extensions receive a basic MIME type; other extensions use `application/octet-stream`.
+
+`ApplicationResponse` contains the normal `httpresponse` headers/status and an optional `StreamedFileBody`. The server owns and closes that descriptor after transmission or connection failure. File contents remain on disk until the response is streamed.
 
 ## Server API
 

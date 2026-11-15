@@ -1,25 +1,78 @@
 #pragma once
 
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <expected>
+#include <fcntl.h>
 #include <filesystem>
-#include <fstream>
-#include <limits>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <utility>
+#include <unistd.h>
 
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Http_Handling/HttpSerializer.h"
 
+class StreamedFileBody {
+private:
+    int descriptor_ = -1;
+    std::uint64_t size_ = 0;
+    std::string expected_name_;
+
+    void close_descriptor() noexcept {
+        if (descriptor_ >= 0) ::close(descriptor_);
+        descriptor_ = -1;
+    }
+
+public:
+    StreamedFileBody(int descriptor, std::uint64_t size, std::string expected_name)
+        : descriptor_(descriptor), size_(size), expected_name_(std::move(expected_name)) {}
+
+    StreamedFileBody(const StreamedFileBody&) = delete;
+    StreamedFileBody& operator=(const StreamedFileBody&) = delete;
+
+    StreamedFileBody(StreamedFileBody&& other) noexcept
+        : descriptor_(std::exchange(other.descriptor_, -1)),
+          size_(other.size_),
+          expected_name_(std::move(other.expected_name_)) {}
+
+    StreamedFileBody& operator=(StreamedFileBody&& other) noexcept {
+        if (this == &other) return *this;
+        close_descriptor();
+        descriptor_ = std::exchange(other.descriptor_, -1);
+        size_ = other.size_;
+        expected_name_ = std::move(other.expected_name_);
+        return *this;
+    }
+
+    ~StreamedFileBody() { close_descriptor(); }
+
+    int descriptor() const noexcept { return descriptor_; }
+    std::uint64_t size() const noexcept { return size_; }
+    const std::string& expected_name() const noexcept { return expected_name_; }
+};
+
+struct ApplicationResponse {
+    httpresponse response;
+    std::optional<StreamedFileBody> file;
+};
+
 class Routing {
+public:
+    struct FileEntry {
+        std::filesystem::path path;
+        std::string expected_name;
+    };
+
 private:
     mutable std::shared_mutex mutex_;
-    std::unordered_map<std::string, std::filesystem::path> routes_;
+    std::unordered_map<std::string, FileEntry> routes_;
 
     static std::string route_path(std::string_view request_target) {
         const std::size_t query_position = request_target.find('?');
@@ -32,13 +85,18 @@ public:
             route.find('?') != std::string::npos || route.find('#') != std::string::npos) {
             return std::unexpected<std::string>("Route must be an absolute URL path without a query or fragment");
         }
+        const std::string expected_name = file.filename().string();
+        if (expected_name.empty()) {
+            return std::unexpected<std::string>("File path must include a filename");
+        }
 
         std::unique_lock lock(mutex_);
-        routes_.insert_or_assign(std::move(route), std::move(file));
+        routes_.insert_or_assign(
+            std::move(route), FileEntry{std::move(file), expected_name});
         return {};
     }
 
-    std::expected<std::filesystem::path, std::string> retrieve(const HTTPRequest& request) const {
+    std::expected<FileEntry, std::string> retrieve_file(const HTTPRequest& request) const {
         const std::string path = route_path(request.target);
         std::shared_lock lock(mutex_);
         const auto route = routes_.find(path);
@@ -46,6 +104,12 @@ public:
             return std::unexpected<std::string>("Route not found");
         }
         return route->second;
+    }
+
+    std::expected<std::filesystem::path, std::string> retrieve(const HTTPRequest& request) const {
+        auto file = retrieve_file(request);
+        if (!file) return std::unexpected<std::string>(file.error());
+        return file->path;
     }
 };
 
@@ -89,91 +153,71 @@ public:
         return routing_.set(std::move(route), std::move(file));
     }
 
-    std::size_t estimated_response_body_size(const HTTPRequest& request) const {
-        if (request.method != "GET" && request.method != "HEAD") return 0;
-        auto route = routing_.retrieve(request);
-        if (!route) return 0;
-
-        std::error_code filesystem_error;
-        if (!std::filesystem::is_regular_file(*route, filesystem_error) || filesystem_error) return 0;
-        const std::uintmax_t size = std::filesystem::file_size(*route, filesystem_error);
-        if (filesystem_error || size > std::numeric_limits<std::size_t>::max()) return 0;
-        return static_cast<std::size_t>(size);
-    }
-
-    httpresponse handle(const HTTPRequest& request) const {
-        return handle(request, std::numeric_limits<std::size_t>::max());
-    }
-
-    httpresponse handle(const HTTPRequest& request, std::size_t maximum_file_size) const {
+    ApplicationResponse handle(const HTTPRequest& request) const {
         if (request.method != "GET" && request.method != "HEAD") {
             auto response = error_response(405, "Method Not Allowed", "Method Not Allowed");
             response.headers["Allow"] = "GET, HEAD";
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
 
-        auto route = routing_.retrieve(request);
-        if (!route) {
+        auto file_entry = routing_.retrieve_file(request);
+        if (!file_entry) {
             auto response = error_response(404, "Not Found", "Not Found");
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
 
-        std::error_code filesystem_error;
-        if (!std::filesystem::is_regular_file(*route, filesystem_error)) {
-            auto response = error_response(404, "Not Found", "Not Found");
+        if (file_entry->expected_name != file_entry->path.filename().string()) {
+            auto response = error_response(404, "Not Found", "Linked file name is no longer available");
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
 
-        const std::uintmax_t file_size = std::filesystem::file_size(*route, filesystem_error);
-        if (filesystem_error) {
-            auto response = error_response(500, "Internal Server Error", "File could not be inspected");
-            response.suppressBody = request.method == "HEAD";
-            return response;
-        }
-        if (file_size > maximum_file_size) {
-            auto response = error_response(503, "Service Unavailable", "Memory budget exhausted");
-            response.suppressBody = request.method == "HEAD";
-            return response;
-        }
-        if (file_size > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
-            auto response = error_response(503, "Service Unavailable", "File exceeds supported response size");
-            response.suppressBody = request.method == "HEAD";
-            return response;
-        }
-
-        std::ifstream file(*route, std::ios::binary);
-        if (!file) {
+        const int descriptor = ::open(file_entry->path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (descriptor == -1) {
+            if (errno == ENOENT || errno == ENOTDIR) {
+                auto response = error_response(404, "Not Found", "Not Found");
+                response.suppressBody = request.method == "HEAD";
+                return ApplicationResponse{.response = std::move(response)};
+            }
             auto response = error_response(500, "Internal Server Error", "File could not be opened");
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
 
-        std::string body(static_cast<std::size_t>(file_size), '\0');
-        if (!body.empty()) {
-            file.read(body.data(), static_cast<std::streamsize>(body.size()));
-        }
-        if (file.bad() || file.gcount() != static_cast<std::streamsize>(body.size())) {
-            auto response = error_response(500, "Internal Server Error", "File could not be read");
+        struct stat file_status{};
+        if (fstat(descriptor, &file_status) == -1) {
+            ::close(descriptor);
+            auto response = error_response(500, "Internal Server Error", "File could not be inspected");
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
-        char unexpected_extra_byte = 0;
-        if (file.get(unexpected_extra_byte)) {
-            auto response = error_response(503, "Service Unavailable", "File changed beyond reserved memory");
+        if (!S_ISREG(file_status.st_mode) || file_status.st_size < 0) {
+            ::close(descriptor);
+            auto response = error_response(404, "Not Found", "Not Found");
             response.suppressBody = request.method == "HEAD";
-            return response;
+            return ApplicationResponse{.response = std::move(response)};
         }
 
+        const auto file_size = static_cast<std::uint64_t>(file_status.st_size);
+        StreamedFileBody opened_file(
+            descriptor, file_size, std::move(file_entry->expected_name));
         httpresponse response{
             .statusCode = 200,
             .statusReason = "OK",
-            .headers = {{"Content-Type", content_type(*route)}},
-            .body = std::move(body),
-            .suppressBody = request.method == "HEAD"
+            .headers = {{"Content-Type", content_type(file_entry->path)}},
+            .suppressBody = true,
+            .contentLength = file_size
         };
-        return response;
+
+        std::optional<StreamedFileBody> file;
+        if (request.method == "GET" && file_size > 0) {
+            file.emplace(std::move(opened_file));
+        }
+        return ApplicationResponse{
+            .response = std::move(response),
+            .file = std::move(file)
+        };
     }
 };

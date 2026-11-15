@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <expected>
 #include <map>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <tuple>
@@ -26,6 +27,7 @@ struct httpresponse {
     std::string body;
     bool suppressBody = false;
     std::string httpVersion = "HTTP/1.1";
+    std::optional<std::uint64_t> contentLength;
 };
 
 inline std::unordered_map<HTTPParserError, int> statusCodeSet{
@@ -100,7 +102,8 @@ public:
             if (normalized_name == "connection") has_connection_header = true;
             ordered_headers[name] = value;
         }
-        ordered_headers["Content-Length"] = std::to_string(response.body.size());
+        ordered_headers["Content-Length"] =
+            std::to_string(response.contentLength.value_or(response.body.size()));
         if (!has_connection_header) ordered_headers["Connection"] = "close";
 
         for (const auto& [name, value] : ordered_headers) {
