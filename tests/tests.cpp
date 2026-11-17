@@ -891,6 +891,19 @@ TEST(application_handler_tests, file_link_routes_get_and_head_requests){
     };
     EXPECT_EQ(handler.handle(missing_request).response.statusCode, 404);
 
+    const std::filesystem::path missing_file =
+        std::filesystem::temp_directory_path() /
+        ("HeartstringsMissingPhase7-" + std::to_string(getpid()) + "-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
+    ASSERT_FALSE(std::filesystem::exists(missing_file));
+    ASSERT_TRUE(handler.File_Link("/missing-file", missing_file).has_value());
+    HTTPRequest missing_file_request{
+        .method = "GET",
+        .target = "/missing-file",
+        .version = "HTTP/1.1"
+    };
+    EXPECT_EQ(handler.handle(missing_file_request).response.statusCode, 404);
+
     HTTPRequest unsupported_method{
         .method = "POST",
         .target = "/welcome",
@@ -899,8 +912,37 @@ TEST(application_handler_tests, file_link_routes_get_and_head_requests){
     EXPECT_EQ(handler.handle(unsupported_method).response.statusCode, 405);
 }
 
-TEST(unittests, large_static_file_is_sent_in_bounded_chunks){
-    constexpr std::size_t file_size = 2 * 64 * 1024 + 13;
+TEST(application_handler_tests, replacing_a_route_uses_the_new_file_metadata){
+    const std::filesystem::path fixtures = std::filesystem::path(__FILE__).parent_path() / "fixtures";
+    const std::filesystem::path first_file = fixtures / "welcome.html";
+    const std::filesystem::path replacement_file = fixtures / "second.txt";
+    const std::string expected_body = "Second pipelined response.\n";
+
+    ApplicationHandler handler;
+    ASSERT_TRUE(handler.File_Link("/replaceable", first_file).has_value());
+    ASSERT_TRUE(handler.File_Link("/replaceable", replacement_file).has_value());
+
+    HTTPRequest request{
+        .method = "GET",
+        .target = "/replaceable",
+        .version = "HTTP/1.1"
+    };
+    ApplicationResponse result = handler.handle(request);
+    ASSERT_EQ(result.response.statusCode, 200);
+    EXPECT_EQ(result.response.contentLength, expected_body.size());
+    EXPECT_EQ(result.response.headers.at("Content-Type"), "text/plain; charset=utf-8");
+    ASSERT_TRUE(result.file.has_value());
+    EXPECT_EQ(result.file->expected_name(), "second.txt");
+
+    std::string actual_body(expected_body.size(), '\0');
+    const ssize_t bytes_read = pread(
+        result.file->descriptor(), actual_body.data(), actual_body.size(), 0);
+    ASSERT_EQ(bytes_read, static_cast<ssize_t>(expected_body.size()));
+    EXPECT_EQ(actual_body, expected_body);
+}
+
+TEST(unittests, large_static_file_is_sent_in_bounded_chunks_after_backpressure){
+    constexpr std::size_t file_size = 2 * 1024 * 1024 + 13;
     const std::filesystem::path file_path =
         std::filesystem::temp_directory_path() /
         ("HeartstringsPhase7-" + std::to_string(getpid()) + ".bin");
@@ -936,6 +978,9 @@ TEST(unittests, large_static_file_is_sent_in_bounded_chunks){
         FAIL() << "Could not create large-file streaming test socket";
         return;
     }
+    int receive_buffer_size = 4096;
+    EXPECT_EQ(setsockopt(
+        client_socket, SOL_SOCKET, SO_RCVBUF, &receive_buffer_size, sizeof(receive_buffer_size)), 0);
     timeval receive_timeout{3, 0};
     (void)setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout, sizeof(receive_timeout));
     sockaddr_in address{};
@@ -968,6 +1013,7 @@ TEST(unittests, large_static_file_is_sent_in_bounded_chunks){
         }
     }
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     std::string response;
     std::array<char, 16 * 1024> response_buffer{};
     bool receive_failed = request_offset != request.size();

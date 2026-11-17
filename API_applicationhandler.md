@@ -1,6 +1,6 @@
 # Application Handler and Routing API
 
-The static-file application handler is implemented in `NetworkingCore/ApplicationHandler.hpp`.
+The shared routing table and response integration are implemented in `NetworkingCore/ApplicationHandler.hpp`. On macOS, `NetworkingCore/PlatformFileHandler.swift` opens and inspects the requested file and determines its content type through a small C ABI bridge. The C++ implementation remains the non-Apple file-handler fallback; the server's `kqueue` event loop is still macOS-specific, so this fallback alone does not provide a non-macOS server build.
 
 ## `Routing`
 
@@ -45,7 +45,7 @@ The public registration API. Links a URL path to a file by calling `Routing::set
 ApplicationResponse handle(const HTTPRequest& request) const;
 ```
 
-Uses the route table to open and inspect the requested regular file, returning response metadata and an owned file descriptor for `GET`, rather than loading the whole file. The server sends the file in bounded 64 KiB chunks with a known `Content-Length`. `HEAD` returns the representation's `Content-Length` without a file body. Unknown routes or files return `404 Not Found`; other methods return `405 Method Not Allowed` with `Allow: GET, HEAD`. Common web extensions receive a basic MIME type; other extensions use `application/octet-stream`.
+Uses the route table to open and inspect the requested regular file, returning response metadata and an owned file descriptor for `GET`, rather than loading the whole file. The macOS implementation performs file opening, regular-file validation, size inspection, and content-type selection in Swift; the non-Apple fallback uses C++. The server sends the file in bounded 64 KiB chunks with a known `Content-Length`. `HEAD` returns the representation's `Content-Length` without a file body. Unknown routes or files return `404 Not Found`; other methods return `405 Method Not Allowed` with `Allow: GET, HEAD`. Common web extensions receive a basic MIME type; other extensions use `application/octet-stream`.
 
 `ApplicationResponse` contains the normal `httpresponse` headers/status and an optional `StreamedFileBody`. The server owns and closes that descriptor after transmission or connection failure. File contents remain on disk until the response is streamed.
 

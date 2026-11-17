@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
@@ -18,6 +19,16 @@
 
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Http_Handling/HttpSerializer.h"
+
+#if defined(__APPLE__)
+extern "C" std::int32_t heartstrings_swift_prepare_file_response(
+    const char* path,
+    std::int32_t is_get_request,
+    std::int32_t* descriptor_out,
+    std::uint64_t* size_out,
+    char* content_type_out,
+    std::uint32_t content_type_capacity);
+#endif
 
 class StreamedFileBody {
 private:
@@ -117,6 +128,7 @@ class ApplicationHandler {
 private:
     Routing routing_;
 
+#if !defined(__APPLE__)
     static std::string content_type(const std::filesystem::path& file) {
         std::string extension = file.extension().string();
         for (char& character : extension) {
@@ -138,6 +150,7 @@ private:
         const auto found = types.find(extension);
         return found == types.end() ? "application/octet-stream" : found->second;
     }
+#endif
 
     static httpresponse error_response(int status_code, std::string reason, std::string body) {
         return httpresponse{
@@ -174,6 +187,36 @@ public:
             return ApplicationResponse{.response = std::move(response)};
         }
 
+        std::string response_content_type;
+#if defined(__APPLE__)
+        std::int32_t opened_descriptor = -1;
+        std::uint64_t file_size = 0;
+        std::array<char, 64> content_type_buffer{};
+        const std::int32_t open_result = heartstrings_swift_prepare_file_response(
+            file_entry->path.c_str(),
+            request.method == "GET" ? 1 : 0,
+            &opened_descriptor,
+            &file_size,
+            content_type_buffer.data(),
+            static_cast<std::uint32_t>(content_type_buffer.size()));
+        const int descriptor = opened_descriptor;
+        if (open_result != 0) {
+            if (open_result == 1 || open_result == 2) {
+                auto response = error_response(404, "Not Found", "Not Found");
+                response.suppressBody = request.method == "HEAD";
+                return ApplicationResponse{.response = std::move(response)};
+            }
+            const char* message = open_result == 4
+                ? "File could not be inspected"
+                : open_result == 3
+                    ? "File could not be opened"
+                    : "File response metadata could not be prepared";
+            auto response = error_response(500, "Internal Server Error", message);
+            response.suppressBody = request.method == "HEAD";
+            return ApplicationResponse{.response = std::move(response)};
+        }
+        response_content_type = content_type_buffer.data();
+#else
         const int descriptor = ::open(file_entry->path.c_str(), O_RDONLY | O_CLOEXEC);
         if (descriptor == -1) {
             if (errno == ENOENT || errno == ENOTDIR) {
@@ -201,12 +244,14 @@ public:
         }
 
         const auto file_size = static_cast<std::uint64_t>(file_status.st_size);
+        response_content_type = content_type(file_entry->path);
+#endif
         StreamedFileBody opened_file(
             descriptor, file_size, std::move(file_entry->expected_name));
         httpresponse response{
             .statusCode = 200,
             .statusReason = "OK",
-            .headers = {{"Content-Type", content_type(file_entry->path)}},
+            .headers = {{"Content-Type", std::move(response_content_type)}},
             .suppressBody = true,
             .contentLength = file_size
         };

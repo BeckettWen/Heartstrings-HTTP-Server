@@ -1,6 +1,7 @@
 #pragma once
 
-// macOS networking implementation using non-blocking sockets and kqueue.
+// Non-blocking HTTP/HTTPS implementation. macOS uses kqueue; other POSIX
+// platforms use poll.
 
 #include <algorithm>
 #include <array>
@@ -23,7 +24,6 @@
 #include <poll.h>
 #include <string>
 #include <system_error>
-#include <sys/event.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <thread>
@@ -31,6 +31,10 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <sys/event.h>
+#endif
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -186,6 +190,13 @@ private:
     static constexpr std::size_t maximum_events_ = 64;
     static constexpr uintptr_t response_ready_event_id_ = 1;
     static constexpr auto keep_alive_idle_timeout_ = std::chrono::seconds(30);
+#if defined(__APPLE__)
+    static constexpr short read_filter_ = EVFILT_READ;
+    static constexpr short write_filter_ = EVFILT_WRITE;
+#else
+    static constexpr short read_filter_ = POLLIN;
+    static constexpr short write_filter_ = POLLOUT;
+#endif
 
     int requested_port_ = 0;
     std::chrono::milliseconds request_read_timeout_ = std::chrono::seconds(30);
@@ -194,13 +205,17 @@ private:
     int listener_socket_ = -1;
     int bound_tls_port_ = 0;
     int tls_listener_socket_ = -1;
+#if defined(__APPLE__)
     int kqueue_descriptor_ = -1;
+#endif
     SSL_CTX* tls_context_ = nullptr;
     std::optional<TLSConfiguration> tls_configuration_;
     bool started_ = false;
     bool run_finished_ = false;
     std::atomic<bool> stop_requested_ = false;
+#if defined(__APPLE__)
     std::array<struct kevent, maximum_events_> events_{};
+#endif
     ConnectionMemoryBudget memory_budget_{default_memory_budget_};
     std::unordered_map<int, std::shared_ptr<client_connection>> clients_;
     ApplicationHandler application_handler_;
@@ -338,11 +353,15 @@ private:
     }
 
     std::expected<void, std::string> register_read_event(int descriptor) {
+#if defined(__APPLE__)
         struct kevent change{};
         EV_SET(&change, static_cast<uintptr_t>(descriptor), EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
         if (kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr) == -1) {
             return std::unexpected<std::string>(last_socket_error("kevent register read"));
         }
+#else
+        (void)descriptor;
+#endif
         return {};
     }
 
@@ -351,6 +370,7 @@ private:
         bool enabled) {
         if (connection->write_interest == enabled) return {};
 
+#if defined(__APPLE__)
         struct kevent change{};
         if (enabled) {
             EV_SET(&change, static_cast<uintptr_t>(connection->descriptor),
@@ -366,32 +386,43 @@ private:
             return std::unexpected<std::string>(last_socket_error("kevent update write interest"));
         }
         connection->write_interest = enabled;
+#else
+        connection->write_interest = enabled;
+#endif
         return {};
     }
 
     void remove_read_event(int descriptor) noexcept {
+#if defined(__APPLE__)
         if (kqueue_descriptor_ < 0) return;
         struct kevent change{};
         EV_SET(&change, static_cast<uintptr_t>(descriptor), EVFILT_READ, EV_DELETE, 0, 0, nullptr);
         (void)kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr);
         EV_SET(&change, static_cast<uintptr_t>(descriptor), EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
         (void)kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr);
+#else
+        (void)descriptor;
+#endif
     }
 
     std::expected<void, std::string> register_response_ready_event() {
+#if defined(__APPLE__)
         struct kevent change{};
         EV_SET(&change, response_ready_event_id_, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
         if (kevent(kqueue_descriptor_, &change, 1, nullptr, 0, nullptr) == -1) {
             return std::unexpected<std::string>(last_socket_error("kevent register response event"));
         }
+#endif
         return {};
     }
 
     void trigger_response_ready_event() noexcept {
+#if defined(__APPLE__)
         if (kqueue_descriptor_ < 0) return;
         struct kevent trigger{};
         EV_SET(&trigger, response_ready_event_id_, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
         (void)kevent(kqueue_descriptor_, &trigger, 1, nullptr, 0, nullptr);
+#endif
     }
 
     void enqueue_response_completion(
@@ -488,8 +519,10 @@ private:
                 continue;
             }
 
+#if defined(__APPLE__)
             int no_sigpipe = 1;
             (void)setsockopt(client_socket, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
             if (!set_nonblocking_descriptor(client_socket)) {
                 close(client_socket);
                 continue;
@@ -1020,8 +1053,8 @@ private:
         const std::shared_ptr<client_connection> connection = client->second;
 
         if (connection->ssl_session != nullptr && !connection->tls_handshake_complete) {
-            if ((connection->write_interest && filter != EVFILT_WRITE) ||
-                (!connection->write_interest && filter != EVFILT_READ)) {
+            if ((connection->write_interest && filter != write_filter_) ||
+                (!connection->write_interest && filter != read_filter_)) {
                 return;
             }
             const handshake_state state = advance_tls_handshake(connection);
@@ -1034,18 +1067,18 @@ private:
 
         if (!connection->response_bytes.empty()) {
             if (connection->ssl_session == nullptr) {
-                if (filter == EVFILT_WRITE) handle_client_write(connection);
-            } else if ((connection->tls_write_wants_read && filter == EVFILT_READ) ||
-                       (connection->write_interest && filter == EVFILT_WRITE)) {
+                if (filter == write_filter_) handle_client_write(connection);
+            } else if ((connection->tls_write_wants_read && filter == read_filter_) ||
+                       (connection->write_interest && filter == write_filter_)) {
                 handle_client_write(connection);
             }
             return;
         }
 
         if (connection->ssl_session == nullptr) {
-            if (filter == EVFILT_READ) handle_plain_client_read(connection, peer_closed);
-        } else if ((filter == EVFILT_READ && !connection->tls_read_wants_write) ||
-                   (filter == EVFILT_WRITE && connection->tls_read_wants_write) ||
+            if (filter == read_filter_) handle_plain_client_read(connection, peer_closed);
+        } else if ((filter == read_filter_ && !connection->tls_read_wants_write) ||
+                   (filter == write_filter_ && connection->tls_read_wants_write) ||
                    SSL_pending(connection->ssl_session) > 0) {
             handle_tls_client_read(connection, peer_closed);
         }

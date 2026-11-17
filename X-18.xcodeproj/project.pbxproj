@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		2E69AED0307D0480001A6176 /* tests.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2EC945FF307C884A00C0D7A3 /* tests.cpp */; };
+		2E69AED0307D0480001A6177 /* PlatformFileHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A18C10001000000000000009 /* PlatformFileHandler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -34,6 +35,7 @@
 		A18C10001000000000000006 /* Heartstrings.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Heartstrings.cpp; sourceTree = "<group>"; };
 		A18C10001000000000000007 /* Heartstrings.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Heartstrings.hpp; sourceTree = "<group>"; };
 		A18C10001000000000000008 /* API_xcode_library.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_xcode_library.md; sourceTree = "<group>"; };
+		A18C10001000000000000009 /* PlatformFileHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformFileHandler.swift; sourceTree = "<group>"; };
 		2EC945FA307C884A00C0D7A3 /* Aegis.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Aegis.hpp; sourceTree = "<group>"; };
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
@@ -94,6 +96,7 @@
 				A18C10001000000000000004 /* ApplicationHandler.hpp */,
 				A18C10001000000000000006 /* Heartstrings.cpp */,
 				A18C10001000000000000007 /* Heartstrings.hpp */,
+				A18C10001000000000000009 /* PlatformFileHandler.swift */,
 			);
 			path = NetworkingCore;
 			sourceTree = "<group>";
@@ -173,6 +176,7 @@
 			isa = PBXSourcesBuildPhase;
 			files = (
 				2E69AED0307D0480001A6176 /* tests.cpp in Sources */,
+				2E69AED0307D0480001A6177 /* PlatformFileHandler.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -186,6 +190,7 @@
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++23";
+				SWIFT_VERSION = 5.0;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -261,6 +266,7 @@
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++23";
+				SWIFT_VERSION = 5.0;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;

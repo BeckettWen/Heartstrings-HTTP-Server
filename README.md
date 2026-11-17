@@ -17,6 +17,7 @@ Http_Handling/
 NetworkingCore/
   non_blocking_native.h   macOS HTTP/HTTPS server and Aegis request storage
   ApplicationHandler.hpp exact file routing and request handler
+  PlatformFileHandler.swift macOS file-open and response-metadata implementation
   Heartstrings.hpp        compiled, dependency-hiding server API
   Heartstrings.cpp        implementation of the compiled API
 Subsystems/
@@ -41,7 +42,7 @@ ProjectVersionInfo.h      X-18 project version information
 
 1. `start()` creates, binds, and listens on the configured port. Port `0` asks the OS to choose a free port; retrieve it with `port()`.
 2. `run()` blocks in the event loop, accepts clients, and accumulates request bytes across partial reads.
-3. Parsed requests are handled by the file router in the shared task pool. Register files with `File_Link(route, file)`. The routing table stores each route's file path and expected filename, not file contents.
+3. Parsed requests are handled by the file router in the shared task pool. Register files with `File_Link(route, file)`. The routing table stores each route's file path and expected filename, not file contents. On macOS, Swift performs file inspection and content-type selection; the C++23 implementation is retained as the non-Apple file-handler fallback. The server event loop remains macOS-specific (`kqueue`), so this does not establish a non-macOS server build.
 4. `GET` streams the linked file in bounded 64 KiB chunks with a `Content-Length`; the whole file is not loaded into memory. `HEAD` serves its headers without a body. Unknown routes/files return `404`; unsupported methods return `405`.
 5. HTTP/1.1 connections remain alive unless a request says `Connection: close`. HTTP/1.0 connections close by default and remain open only with `Connection: keep-alive`. Pipelined requests are processed and answered in order.
 6. At most 128 client connections are tracked by default across HTTP and HTTPS. Configure another positive limit before `start()` with `set_maximum_connections(limit)`; excess accepted sockets are immediately closed. Idle keep-alive connections close after 30 seconds. Incomplete requests also have an absolute 30-second read deadline, not extended by trickled bytes; they receive `408 Request Timeout`. Call `stop()` from another thread to ask the event loop to exit. The server drains request tasks before `run()` returns.
