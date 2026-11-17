@@ -1,6 +1,10 @@
 #include "Heartstrings.hpp"
 
+#if defined(__APPLE__)
 #include "non_blocking_native.h"
+#else
+#include "PortableServer.hpp"
+#endif
 
 #include <utility>
 

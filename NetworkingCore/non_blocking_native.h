@@ -193,9 +193,15 @@ private:
 #if defined(__APPLE__)
     static constexpr short read_filter_ = EVFILT_READ;
     static constexpr short write_filter_ = EVFILT_WRITE;
+    static constexpr int socket_send_flags_ = 0;
 #else
     static constexpr short read_filter_ = POLLIN;
     static constexpr short write_filter_ = POLLOUT;
+#if defined(MSG_NOSIGNAL)
+    static constexpr int socket_send_flags_ = MSG_NOSIGNAL;
+#else
+    static constexpr int socket_send_flags_ = 0;
+#endif
 #endif
 
     int requested_port_ = 0;
@@ -1031,7 +1037,7 @@ private:
                 connection->descriptor,
                 connection->response_bytes.data() + connection->response_offset,
                 connection->response_bytes.size() - connection->response_offset,
-                0);
+                socket_send_flags_);
             if (written > 0) {
                 connection->response_offset += static_cast<std::size_t>(written);
                 connection->last_activity = std::chrono::steady_clock::now();
@@ -1259,6 +1265,7 @@ public:
             tls_listener_socket_ = *https_listener;
         }
 
+#if defined(__APPLE__)
         kqueue_descriptor_ = kqueue();
         if (kqueue_descriptor_ == -1) {
             const std::string error = last_socket_error("kqueue");
@@ -1320,6 +1327,7 @@ public:
             }
             return std::unexpected<std::string>(registration.error());
         }
+#endif
 
         started_ = true;
         stop_requested_.store(false);

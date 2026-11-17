@@ -36,6 +36,7 @@
 		A18C10001000000000000007 /* Heartstrings.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Heartstrings.hpp; sourceTree = "<group>"; };
 		A18C10001000000000000008 /* API_xcode_library.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = API_xcode_library.md; sourceTree = "<group>"; };
 		A18C10001000000000000009 /* PlatformFileHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformFileHandler.swift; sourceTree = "<group>"; };
+		A18C10001000000000000010 /* PortableServer.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = PortableServer.hpp; sourceTree = "<group>"; };
 		2EC945FA307C884A00C0D7A3 /* Aegis.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = Aegis.hpp; sourceTree = "<group>"; };
 		2EC945FB307C884A00C0D7A3 /* StateMachine.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = StateMachine.hpp; sourceTree = "<group>"; };
 		2EC945FC307C884A00C0D7A3 /* ThreadPool.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ThreadPool.hpp; sourceTree = "<group>"; };
@@ -97,6 +98,7 @@
 				A18C10001000000000000006 /* Heartstrings.cpp */,
 				A18C10001000000000000007 /* Heartstrings.hpp */,
 				A18C10001000000000000009 /* PlatformFileHandler.swift */,
+				A18C10001000000000000010 /* PortableServer.hpp */,
 			);
 			path = NetworkingCore;
 			sourceTree = "<group>";

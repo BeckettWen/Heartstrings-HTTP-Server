@@ -4,7 +4,7 @@ The binary distribution is `Heartstrings.xcframework` in the sibling `X-18 Produ
 
 The Phase 6 memory-budget API and Phase 7 file-streaming implementation are present in source but have not yet been added to the prebuilt XCFramework. Rebuild and republish that binary before relying on `set_memory_budget()` or the updated streaming behavior from an Xcode consumer.
 
-The current source-level Phase 7 macOS handler uses `NetworkingCore/PlatformFileHandler.swift` for file opening, regular-file validation, size inspection, and content-type selection. The C++ route table and `kqueue` event loop remain in place; this phase does not make the server itself cross-platform. Include the Swift source in macOS source builds that use `ApplicationHandler.hpp`. The non-Apple C++ handler fallback is not a supported non-macOS server build; the full server still lacks a non-macOS networking backend and build target.
+The current source-level Phase 7 macOS handler uses `NetworkingCore/PlatformFileHandler.swift` for file opening, regular-file validation, size inspection, and content-type selection. The C++ route table and macOS `kqueue` event loop remain in place. Non-Apple POSIX builds use `NetworkingCore/PortableServer.hpp`, a C++23 `poll` backend. That backend has a CMake build and regression-test target, but does not yet reproduce the macOS Aegis and 80/20 memory-accounting behavior. Windows is not currently supported.
 
 ## Requirements
 

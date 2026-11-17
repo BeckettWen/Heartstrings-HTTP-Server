@@ -1,6 +1,6 @@
 # Application Handler and Routing API
 
-The shared routing table and response integration are implemented in `NetworkingCore/ApplicationHandler.hpp`. On macOS, `NetworkingCore/PlatformFileHandler.swift` opens and inspects the requested file and determines its content type through a small C ABI bridge. The C++ implementation remains the non-Apple file-handler fallback; the server's `kqueue` event loop is still macOS-specific, so this fallback alone does not provide a non-macOS server build.
+The shared routing table and response integration are implemented in `NetworkingCore/ApplicationHandler.hpp`. On macOS, `NetworkingCore/PlatformFileHandler.swift` opens and inspects the requested file and determines its content type through a small C ABI bridge. On non-Apple POSIX systems, `NetworkingCore/PortableServer.hpp` uses the C++23 handler and a `poll`-based server backend.
 
 ## `Routing`
 
