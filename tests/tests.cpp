@@ -22,7 +22,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-
+#include "../Subsystems/IPRateLimiter.hpp"
 #include <openssl/ssl.h>
 
 #include "../Http_Handling/HttpSerializer.h"
@@ -302,6 +302,18 @@ static TLSLoopbackOutcome run_tls_loopback(
     outcome.server_run_succeeded = server_result.has_value();
     if (!server_result) outcome.error = server_result.error();
     return outcome;
+}
+
+TEST(ip_rate_limiter_tests, limits_successful_requests_per_fixed_window) {
+    IPRateLimiter limiter;
+    for (std::size_t index = 0; index < IPRateLimiter::requests_per_window; ++index) {
+        EXPECT_TRUE(limiter.reserve("127.0.0.1"));
+    }
+    EXPECT_FALSE(limiter.reserve("127.0.0.1"));
+    EXPECT_TRUE(limiter.reserve("127.0.0.2"));
+
+    limiter.release_reservation("127.0.0.1");
+    EXPECT_TRUE(limiter.reserve("127.0.0.1"));
 }
 
 TEST(unittests, serializertest){

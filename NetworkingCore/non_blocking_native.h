@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #if defined(__APPLE__)
 #include <sys/event.h>
@@ -44,6 +45,7 @@
 #include "../Subsystems/StateMachine.hpp"
 #include "../Subsystems/Aegis.hpp"
 #include "../Subsystems/ThreadPool.hpp"
+#include "../Subsystems/IPRateLimiter.hpp"
 #include "ApplicationHandler.hpp"
 #include "ConnectionMemoryBudget.hpp"
 
@@ -138,6 +140,7 @@ private:
             Aegis_stateMachine::StateMachine<connection_state, connection_event>;
 
         int descriptor = -1;
+        std::string ip_address;
         SSL* ssl_session = nullptr;
         bool tls_handshake_complete = false;
         bool write_interest = false;
@@ -225,6 +228,7 @@ private:
     ConnectionMemoryBudget memory_budget_{default_memory_budget_};
     std::unordered_map<int, std::shared_ptr<client_connection>> clients_;
     ApplicationHandler application_handler_;
+    IPRateLimiter ip_rate_limiter_;
     struct response_completion {
         std::shared_ptr<client_connection> connection;
         httpresponse response;
@@ -543,6 +547,12 @@ private:
                 continue;
             }
             connection->descriptor = client_socket;
+            char ip_buffer[INET_ADDRSTRLEN]{};
+            if (inet_ntop(AF_INET, &client_address.sin_addr, ip_buffer, sizeof(ip_buffer)) != nullptr) {
+                connection->ip_address = ip_buffer;
+            } else {
+                connection->ip_address = "unknown";
+            }
 
             if (use_tls) {
                 ERR_clear_error();
@@ -630,8 +640,23 @@ private:
     void dispatch_request(
         const std::shared_ptr<client_connection>& connection,
         HTTPRequest request) {
+        if (!ip_rate_limiter_.reserve(connection->ip_address)) {
+            enqueue_immediate_response(connection,
+                httpresponse{
+                    .statusCode = 429,
+                    .statusReason = "Too Many Requests",
+                    .headers = {
+                        {"Content-Type", "text/plain; charset=utf-8"},
+                        {"Retry-After", "15"}
+                    },
+                    .body = "Too Many Requests"
+                }, false);
+            return;
+        }
+
         const auto request_charge = request_work_memory_estimate(request.body.size());
         if (!request_charge || !connection->memory_lease.try_reserve(*request_charge)) {
+            ip_rate_limiter_.release_reservation(connection->ip_address);
             enqueue_immediate_response(connection,
                 httpresponse{
                     .statusCode = 503,
@@ -644,6 +669,7 @@ private:
 
         if (!transition_to_keep_alive(connection)) {
             connection->memory_lease.release(*request_charge);
+            ip_rate_limiter_.release_reservation(connection->ip_address);
             close_client(connection->descriptor);
             return;
         }
@@ -714,6 +740,9 @@ private:
                 }
 
                 connection->memory_lease.release(request_memory_charge);
+                if (!IPRateLimiter::is_success_status(response.statusCode)) {
+                    ip_rate_limiter_.release_reservation(connection->ip_address);
+                }
                 enqueue_response_completion(
                     connection, std::move(response), response_memory_charge,
                     force_close_after_response, std::move(response_file));
@@ -721,6 +750,7 @@ private:
 
         if (!submission) {
             connection->memory_lease.release(*request_charge);
+            ip_rate_limiter_.release_reservation(connection->ip_address);
             connection->close_after_response = true;
             enqueue_response_completion(connection, httpresponse{
                 .statusCode = 503,

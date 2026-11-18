@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../NetworkingCore/ApplicationHandler.hpp"
+#include "../Subsystems/IPRateLimiter.hpp"
 
 namespace {
 
@@ -35,6 +36,19 @@ struct temporary_files {
 };
 
 } // namespace
+
+TEST(IPRateLimiter, limitsSuccessfulRequestsPerFixedWindow) {
+    IPRateLimiter limiter;
+
+    for (std::size_t index = 0; index < IPRateLimiter::requests_per_window; ++index) {
+        EXPECT_TRUE(limiter.reserve("127.0.0.1"));
+    }
+    EXPECT_FALSE(limiter.reserve("127.0.0.1"));
+    EXPECT_TRUE(limiter.reserve("127.0.0.2"));
+
+    limiter.release_reservation("127.0.0.1");
+    EXPECT_TRUE(limiter.reserve("127.0.0.1"));
+}
 
 TEST(ApplicationHandler, replacementAndQueryLookupUseOnlyTheLinkedFile) {
     temporary_files files;

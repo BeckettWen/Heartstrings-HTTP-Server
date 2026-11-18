@@ -25,12 +25,14 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
 #include "../Http_Handling/HttpParser.hpp"
 #include "../Http_Handling/HttpSerializer.h"
+#include "../Subsystems/IPRateLimiter.hpp"
 #include "ApplicationHandler.hpp"
 
 struct TLSConfiguration {
@@ -64,6 +66,7 @@ private:
     bool started_ = false;
     bool run_finished_ = false;
     ApplicationHandler application_handler_;
+    IPRateLimiter ip_rate_limiter_;
     std::mutex clients_mutex_;
     std::unordered_set<int> active_sockets_;
     std::vector<std::jthread> client_threads_;
@@ -257,10 +260,33 @@ private:
     bool send_application_response(
         int descriptor,
         SSL* session,
+        const std::string& ip_address,
         const HTTPRequest& request,
         bool close_after_response) {
+        if (!ip_rate_limiter_.reserve(ip_address)) {
+            httpresponse response{
+                .statusCode = 429,
+                .statusReason = "Too Many Requests",
+                .headers = {
+                    {"Content-Type", "text/plain; charset=utf-8"},
+                    {"Retry-After", "15"}
+                },
+                .body = "Too Many Requests"
+            };
+            response.httpVersion = request.version;
+            response.headers.insert_or_assign(
+                "Connection", close_after_response ? "close" : "keep-alive");
+            httpSerializer serializer;
+            if (!serializer.Serialize(response)) return false;
+            const auto response_bytes = serializer.ReturnSerializedResult();
+            return send_all(descriptor, session, response_bytes.data(), response_bytes.size());
+        }
+
         ApplicationResponse application_response = application_handler_.handle(request);
         httpresponse response = std::move(application_response.response);
+        if (!IPRateLimiter::is_success_status(response.statusCode)) {
+            ip_rate_limiter_.release_reservation(ip_address);
+        }
         response.httpVersion = request.version;
         response.headers.insert_or_assign(
             "Connection", close_after_response ? "close" : "keep-alive");
@@ -292,7 +318,7 @@ private:
         return true;
     }
 
-    void serve_client(int descriptor, bool use_tls) {
+    void serve_client(int descriptor, bool use_tls, const std::string& ip_address) {
         SSL* session = nullptr;
         if (use_tls) {
             session = SSL_new(tls_context_);
@@ -347,7 +373,7 @@ private:
                     const std::size_t consumed = parser.bytesConsumed();
                     const bool close_after_response = !request_allows_keep_alive(*parsed);
                     if (!send_application_response(
-                            descriptor, session, *parsed, close_after_response)) {
+                            descriptor, session, ip_address, *parsed, close_after_response)) {
                         break;
                     }
                     request_bytes.erase(
@@ -428,7 +454,10 @@ private:
 
     void accept_clients(int listener, bool use_tls) {
         while (!stop_requested_.load()) {
-            const int descriptor = accept(listener, nullptr, nullptr);
+            sockaddr_in client_address{};
+            socklen_t address_length = sizeof(client_address);
+            const int descriptor = accept(
+                listener, reinterpret_cast<sockaddr*>(&client_address), &address_length);
             if (descriptor == -1) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) return;
@@ -444,8 +473,15 @@ private:
                 std::lock_guard lock(clients_mutex_);
                 active_sockets_.insert(descriptor);
             }
+            char ip_buffer[INET_ADDRSTRLEN]{};
+            std::string ip_address = "unknown";
+            if (inet_ntop(AF_INET, &client_address.sin_addr, ip_buffer, sizeof(ip_buffer)) != nullptr) {
+                ip_address = ip_buffer;
+            }
             client_threads_.emplace_back(
-                [this, descriptor, use_tls] { serve_client(descriptor, use_tls); });
+                [this, descriptor, use_tls, ip_address] {
+                    serve_client(descriptor, use_tls, ip_address);
+                });
         }
     }
 
